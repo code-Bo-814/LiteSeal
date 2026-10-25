@@ -147,6 +147,21 @@ def main():
     assert os.path.isfile(os.path.join(out_dir, "photo_watermarked.png"))
     assert os.path.isfile(os.path.join(out_dir, "doc_watermarked.pdf"))
 
+    # 11b) ExportWorker 真线程:信号跨线程投递、事件循环收尾
+    from PySide6.QtCore import QEventLoop, QTimer
+    thr_dir = os.path.join(OUT, "export_thread")
+    os.makedirs(thr_dir, exist_ok=True)
+    worker = ExportWorker([photo_path, pdf], w._collect_config(), thr_dir, "keep")
+    loop = QEventLoop()
+    result = {}
+    worker.finished_all.connect(lambda ok, fail: (result.update(ok=ok, fail=fail), loop.quit()))
+    worker.start()
+    QTimer.singleShot(30000, loop.quit)
+    loop.exec()
+    worker.wait()
+    assert result.get("ok") == 2, result
+    assert len(os.listdir(thr_dir)) == 2
+
     # 12) PDF 选页:范围解析 + 选页导出(第 2 页应无水印,页数不变)
     from app.core.exporter import export_file
     from app.core.pdf_wm import parse_page_spec

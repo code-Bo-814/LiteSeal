@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 
-from PIL import Image
+from PIL import Image, ImageOps
 from PySide6.QtCore import QSettings, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
@@ -596,6 +596,7 @@ class MainWindow(QMainWindow):
             img = pdf_page_image(path, page, PREVIEW_MAX_PX).convert("RGBA")
         else:
             with Image.open(path) as img:
+                img = ImageOps.exif_transpose(img)
                 img = img.convert("RGBA")
                 img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX), Image.Resampling.LANCZOS)
                 img = img.copy()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .image_wm import apply_image_watermark, save_image
 from .models import IMAGE_EXTS, PDF_EXTS, SUPPORTED_EXTS, WatermarkConfig
@@ -29,5 +29,6 @@ def export_file(path: str, cfg: WatermarkConfig, out_dir: str,
     out_ext = "jpg" if fmt == "jpg" else fmt
     out_path = os.path.join(out_dir, stem + "_watermarked." + out_ext)
     with Image.open(path) as img:
+        img = ImageOps.exif_transpose(img)  # 手机照片按 EXIF 方向摆正,预览与输出一致
         save_image(apply_image_watermark(img, cfg), out_path, fmt)
     return out_path

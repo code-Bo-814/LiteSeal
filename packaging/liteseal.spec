@@ -24,7 +24,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=["PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+              "PySide6.QtWebChannel", "PySide6.QtQml", "PySide6.QtQuick",
+              "PySide6.QtOpenGL", "PySide6.QtPdf"],
     noarchive=False,
 )
 

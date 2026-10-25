@@ -33,7 +33,8 @@ def parse_page_spec(spec: str, total: int) -> list[int]:
         if "-" in token:
             start_s, _, end_s = token.partition("-")
             try:
-                start, end = int(start_s), int(end_s)
+                start = int(start_s) if start_s.strip() else 1
+                end = int(end_s) if end_s.strip() else total  # "3-" = 3 到最后一页
             except ValueError:
                 raise ValueError(f"页码写法不对: {token}")
             if start < 1 or end < start:
