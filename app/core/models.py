@@ -42,3 +42,7 @@ class WatermarkConfig:
     tile_spacing: int = 200     # 平铺间距,相邻水印中心距 = 水印尺寸 * spacing / 100
     position: str = "center"    # tiled=False 时生效
     margin_pct: int = 4         # 单个水印距边距,短边的百分比
+
+
+# 应用默认值,"恢复默认设置"以它为准
+DEFAULTS = WatermarkConfig()

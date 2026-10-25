@@ -1,6 +1,6 @@
 """LiteSeal 主窗口。
 
-布局:左侧文件列表 | 中间预览 | 右侧水印参数面板。
+布局:左侧文件列表 | 中间可缩放预览(图片 / PDF 翻页) | 右侧水印参数面板。
 所有参数变动经 150ms 防抖后刷新预览;导出走 ExportWorker 后台线程。
 """
 
@@ -9,10 +9,12 @@ from __future__ import annotations
 import os
 
 from PIL import Image
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPixmap
-from PySide6.QtWidgets import (QColorDialog, QFileDialog, QHBoxLayout, QLabel,
-                               QMainWindow, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
+                               QGraphicsScene, QGraphicsTextItem, QGraphicsView,
+                               QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout,
+                               QWidget)
 from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             InfoBar, InfoBarPosition, LineEdit, ListWidget,
                             PrimaryPushButton, ProgressBar, PushButton, ScrollArea,
@@ -21,8 +23,9 @@ from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
 
 from app import APP_NAME, __version__
 from app.core.image_wm import apply_image_watermark
-from app.core.models import IMAGE_EXTS, PDF_EXTS, POSITION_LABELS, POSITIONS, SUPPORTED_EXTS, WatermarkConfig
-from app.core.pdf_wm import pdf_page_image
+from app.core.models import (DEFAULTS, IMAGE_EXTS, PDF_EXTS, POSITION_LABELS,
+                             POSITIONS, SUPPORTED_EXTS, WatermarkConfig)
+from app.core.pdf_wm import pdf_page_count, pdf_page_image
 from app.ui.workers import ExportWorker
 
 PREVIEW_MAX_PX = 1400
@@ -34,6 +37,96 @@ def _pil_to_pixmap(img: Image.Image) -> QPixmap:
     data = rgba.tobytes("raw", "RGBA")
     qimg = QImage(data, rgba.width, rgba.height, rgba.width * 4, QImage.Format.Format_RGBA8888)
     return QPixmap.fromImage(qimg.copy())
+
+
+class PreviewView(QGraphicsView):
+    """可滚轮缩放、拖拽平移、双击复位的预览区,始终保持宽高比。"""
+
+    zoom_changed = Signal(float)  # 当前缩放百分比
+
+    MIN_SCALE = 0.05
+    MAX_SCALE = 12.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self._pix_item = QGraphicsPixmapItem()
+        self._pix_item.setVisible(False)
+        self._scene.addItem(self._pix_item)
+        self._hint_item = QGraphicsTextItem()
+        font = self._hint_item.font()
+        font.setPointSize(13)
+        self._hint_item.setFont(font)
+        self._hint_item.setDefaultTextColor(QColor(130, 130, 130))
+        self._scene.addItem(self._hint_item)
+
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setFrameShape(QGraphicsView.Shape.NoFrame)
+        self._auto_fit = True
+
+    def current_zoom(self) -> float:
+        return self.transform().m11() * 100
+
+    def set_pixmap(self, pixmap: QPixmap | None, hint: str = ""):
+        self._auto_fit = True
+        if pixmap is None or pixmap.isNull():
+            self._pix_item.setVisible(False)
+            self._hint_item.setPlainText(hint or "")
+            self._hint_item.setVisible(True)
+            self._scene.setSceneRect(self._hint_item.boundingRect())
+            self.resetTransform()
+        else:
+            self._hint_item.setVisible(False)
+            self._pix_item.setPixmap(pixmap)
+            self._pix_item.setVisible(True)
+            self._scene.setSceneRect(QRectF(pixmap.rect()))
+            QTimer.singleShot(0, self.fit_view)
+        self.zoom_changed.emit(self.current_zoom())
+
+    def fit_view(self):
+        self._auto_fit = True
+        if self._pix_item.isVisible():
+            self.resetTransform()
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.zoom_changed.emit(self.current_zoom())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._auto_fit and self._pix_item.isVisible():
+            QTimer.singleShot(0, self.fit_view)
+
+    def _apply_zoom(self, factor: float):
+        current = self.transform().m11()
+        target = current * factor
+        if target < self.MIN_SCALE:
+            factor = self.MIN_SCALE / current
+        elif target > self.MAX_SCALE:
+            factor = self.MAX_SCALE / current
+        if abs(factor - 1.0) < 1e-9:
+            return
+        self._auto_fit = False
+        self.scale(factor, factor)
+        self.zoom_changed.emit(self.current_zoom())
+
+    def zoom_in(self):
+        self._apply_zoom(1.25)
+
+    def zoom_out(self):
+        self._apply_zoom(0.8)
+
+    def wheelEvent(self, event):
+        if not self._pix_item.isVisible():
+            super().wheelEvent(event)
+            return
+        self._apply_zoom(1.25 if event.angleDelta().y() > 0 else 0.8)
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        self.fit_view()
+        super().mouseDoubleClickEvent(event)
 
 
 class FileList(ListWidget):
@@ -75,15 +168,18 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(960, 640)
 
         self._files: list[str] = []
+        self._wm_mode = "text"          # 自己维护,不依赖 qfluentwidgets 内部状态
         self._watermark_image_path = ""
         self._worker: ExportWorker | None = None
+        self._page_index = 0
+        self._pdf_pages = 1
+        self._sliders: dict[str, Slider] = {}
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(150)
         self._preview_timer.timeout.connect(self._render_preview)
 
         self._build_ui()
-        self._collect_config()  # 初始化一次内部状态
         self._render_preview()
 
     # ------------------------------------------------------------------ UI
@@ -127,15 +223,15 @@ class MainWindow(QMainWindow):
         self.file_list.files_dropped.connect(self.add_files)
         layout.addWidget(self.file_list, stretch=1)
 
-        btn_row1 = QHBoxLayout()
+        btn_row = QHBoxLayout()
         btn_add = PushButton(FIF.ADD, "添加")
         btn_add.clicked.connect(self._pick_files)
         btn_remove = ToolButton(FIF.DELETE)
         btn_remove.setToolTip("移除选中")
         btn_remove.clicked.connect(self._remove_selected)
-        btn_row1.addWidget(btn_add, stretch=1)
-        btn_row1.addWidget(btn_remove)
-        layout.addLayout(btn_row1)
+        btn_row.addWidget(btn_add, stretch=1)
+        btn_row.addWidget(btn_remove)
+        layout.addLayout(btn_row)
 
         btn_clear = PushButton(FIF.CLOSE, "清空列表")
         btn_clear.clicked.connect(self._clear_files)
@@ -149,14 +245,48 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         layout.addWidget(StrongBodyLabel("预览"))
 
-        self.preview_area = ScrollArea()
-        self.preview_area.setWidgetResizable(True)
-        self.preview_area.setFrameShape(ScrollArea.Shape.NoFrame)
-        self.preview_label = QLabel("把文件拖进左侧列表开始使用")
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumSize(200, 200)
-        self.preview_area.setWidget(self.preview_label)
-        layout.addWidget(self.preview_area, stretch=1)
+        self.preview_view = PreviewView()
+        self.preview_view.zoom_changed.connect(
+            lambda pct: self.zoom_label.setText(f"{round(pct)}%"))
+        layout.addWidget(self.preview_view, stretch=1)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(6)
+        btn_zoom_out = ToolButton(FIF.ZOOM_OUT)
+        btn_zoom_out.setToolTip("缩小(也可用滚轮)")
+        btn_zoom_out.clicked.connect(self.preview_view.zoom_out)
+        btn_zoom_in = ToolButton(FIF.ZOOM_IN)
+        btn_zoom_in.setToolTip("放大(也可用滚轮)")
+        btn_zoom_in.clicked.connect(self.preview_view.zoom_in)
+        btn_fit = PushButton("适应窗口")
+        btn_fit.clicked.connect(self.preview_view.fit_view)
+        self.zoom_label = BodyLabel("100%")
+        self.zoom_label.setFixedWidth(46)
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        bar.addWidget(btn_zoom_out)
+        bar.addWidget(btn_zoom_in)
+        bar.addWidget(btn_fit)
+        bar.addWidget(self.zoom_label)
+        bar.addStretch(1)
+
+        self.page_bar = QWidget()
+        page_layout = QHBoxLayout(self.page_bar)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(6)
+        page_prev = ToolButton(FIF.CARE_LEFT_SOLID)
+        page_prev.setToolTip("上一页")
+        page_prev.clicked.connect(lambda: self._on_page_change(-1))
+        page_next = ToolButton(FIF.CARE_RIGHT_SOLID)
+        page_next.setToolTip("下一页")
+        page_next.clicked.connect(lambda: self._on_page_change(1))
+        self.page_label = BodyLabel("1 / 1")
+        self.page_label.setFixedWidth(60)
+        self.page_label.setAlignment(Qt.AlignCenter)
+        page_layout.addWidget(page_prev)
+        page_layout.addWidget(self.page_label)
+        page_layout.addWidget(page_next)
+        bar.addWidget(self.page_bar)
+        layout.addLayout(bar)
         return panel
 
     def _build_settings_panel(self) -> QWidget:
@@ -178,12 +308,13 @@ class MainWindow(QMainWindow):
 
         # 水印类型切换
         self.mode_segment = SegmentedWidget(panel)
-        self.mode_segment.addItem(routeKey="text", text="文字水印", onClick=lambda: self._on_mode_changed("text"))
-        self.mode_segment.addItem(routeKey="image", text="图片水印", onClick=lambda: self._on_mode_changed("image"))
+        self.mode_segment.addItem(routeKey="text", text="文字水印",
+                                  onClick=lambda: self._on_mode_changed("text"))
+        self.mode_segment.addItem(routeKey="image", text="图片水印",
+                                  onClick=lambda: self._on_mode_changed("image"))
         self.mode_segment.setCurrentItem("text")
         layout.addWidget(self.mode_segment)
 
-        # 文字 / 图片两种参数页
         self.mode_stack = QStackedWidget()
         self.mode_stack.addWidget(self._build_text_settings())
         self.mode_stack.addWidget(self._build_image_settings())
@@ -192,43 +323,47 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._separator())
 
         # 公共参数
-        layout.addWidget(self._slider_row("不透明度", 5, 100, 40, "%", lambda v: setattr(self, "_opacity", v)))
-        layout.addWidget(self._slider_row("旋转角度", -90, 90, -30, "°", lambda v: setattr(self, "_rotation", v)))
+        layout.addWidget(self._slider_row("opacity", "不透明度", 5, 100, 40, "%", "_opacity"))
+        layout.addWidget(self._slider_row("rotation", "旋转角度", -90, 90, -30, "°", "_rotation"))
 
         self.tiled_switch = SwitchButton("平铺整个画面", panel)
         self.tiled_switch.checkedChanged.connect(self._on_tiled_changed)
         layout.addWidget(self.tiled_switch)
 
-        self.tile_row = self._slider_row("平铺疏密", 120, 400, 200, "%", lambda v: setattr(self, "_tile_spacing", v))
+        self.tile_row = self._slider_row("tile_spacing", "平铺疏密", 120, 400, 200, "%", "_tile_spacing")
         layout.addWidget(self.tile_row)
 
-        pos_row = QHBoxLayout()
-        pos_row.addWidget(BodyLabel("位置"))
+        pos_widget = QWidget()
+        pos_layout = QHBoxLayout(pos_widget)
+        pos_layout.setContentsMargins(0, 0, 0, 0)
+        pos_layout.addWidget(BodyLabel("位置"))
         self.position_combo = ComboBox()
         for key in POSITIONS:
             self.position_combo.addItem(POSITION_LABELS[key], userData=key)
-        self.position_combo.setCurrentIndex(4)  # 居中
+        self.position_combo.setCurrentIndex(POSITIONS.index(DEFAULTS.position))
         self.position_combo.currentIndexChanged.connect(self._schedule_preview)
-        pos_row.addWidget(self.position_combo, stretch=1)
-        pos_widget = QWidget()
-        pos_widget.setLayout(pos_row)
+        pos_layout.addWidget(self.position_combo, stretch=1)
         self.pos_widget = pos_widget
         layout.addWidget(pos_widget)
 
-        layout.addWidget(self._slider_row("边距", 0, 20, 4, "%", lambda v: setattr(self, "_margin", v)))
-        self.margin_row = layout.itemAt(layout.count() - 1).widget()
+        self.margin_row = self._slider_row("margin", "边距", 0, 20, 4, "%", "_margin")
+        layout.addWidget(self.margin_row)
 
         layout.addWidget(self._separator())
 
         # 输出设置
-        out_row = QHBoxLayout()
-        out_row.addWidget(BodyLabel("图片输出格式"))
+        out_widget = QWidget()
+        out_layout = QHBoxLayout(out_widget)
+        out_layout.setContentsMargins(0, 0, 0, 0)
+        out_layout.addWidget(BodyLabel("图片输出格式"))
         self.format_combo = ComboBox()
         self.format_combo.addItems(IMAGE_FORMAT_ITEMS)
-        out_row.addWidget(self.format_combo, stretch=1)
-        out_widget = QWidget()
-        out_widget.setLayout(out_row)
+        out_layout.addWidget(self.format_combo, stretch=1)
         layout.addWidget(out_widget)
+
+        self.reset_btn = PushButton(FIF.SYNC, "恢复默认设置")
+        self.reset_btn.clicked.connect(self._reset_defaults)
+        layout.addWidget(self.reset_btn)
 
         self.export_btn = PrimaryPushButton(FIF.SAVE, "选择文件夹并导出")
         self.export_btn.clicked.connect(self._export)
@@ -246,22 +381,22 @@ class MainWindow(QMainWindow):
 
         self.text_edit = LineEdit()
         self.text_edit.setPlaceholderText("输入水印文字")
-        self.text_edit.setText("LiteSeal")
+        self.text_edit.setText(DEFAULTS.text)
         self.text_edit.textChanged.connect(self._schedule_preview)
         layout.addWidget(self.text_edit)
 
-        layout.addWidget(self._slider_row("文字大小", 3, 30, 6, "%", lambda v: setattr(self, "_font_size", v)))
+        layout.addWidget(self._slider_row("font_size", "文字大小", 3, 30, 6, "%", "_font_size"))
 
-        color_row = QHBoxLayout()
-        color_row.addWidget(BodyLabel("文字颜色"))
-        self._color = "#FFFFFF"
+        color_widget = QWidget()
+        color_layout = QHBoxLayout(color_widget)
+        color_layout.setContentsMargins(0, 0, 0, 0)
+        color_layout.addWidget(BodyLabel("文字颜色"))
+        self._color = DEFAULTS.color
         self.color_btn = ToolButton(FIF.BRUSH)
         self.color_btn.clicked.connect(self._pick_color)
         self._update_color_btn()
-        color_row.addWidget(self.color_btn)
-        color_row.addStretch(1)
-        color_widget = QWidget()
-        color_widget.setLayout(color_row)
+        color_layout.addWidget(self.color_btn)
+        color_layout.addStretch(1)
         layout.addWidget(color_widget)
         return w
 
@@ -279,20 +414,19 @@ class MainWindow(QMainWindow):
         self.image_path_label.setWordWrap(True)
         layout.addWidget(self.image_path_label)
 
-        layout.addWidget(self._slider_row("图片大小", 3, 60, 14, "%", lambda v: setattr(self, "_image_size", v)))
+        layout.addWidget(self._slider_row("image_size", "图片大小", 3, 60, 14, "%", "_image_size"))
         return w
 
-    def _slider_row(self, label: str, min_v: int, max_v: int, value: int,
-                    suffix: str, on_change) -> QWidget:
+    def _slider_row(self, key: str, label: str, min_v: int, max_v: int, value: int,
+                    suffix: str, attr: str) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         top = QHBoxLayout()
-        name = BodyLabel(label)
-        value_label = BodyLabel(f"{value}{suffix}")
-        top.addWidget(name)
+        top.addWidget(BodyLabel(label))
         top.addStretch(1)
+        value_label = BodyLabel(f"{value}{suffix}")
         top.addWidget(value_label)
         slider = Slider(Qt.Horizontal)
         slider.setRange(min_v, max_v)
@@ -300,13 +434,13 @@ class MainWindow(QMainWindow):
 
         def changed(v):
             value_label.setText(f"{v}{suffix}")
-            on_change(v)
+            setattr(self, attr, v)
             self._schedule_preview()
 
         slider.valueChanged.connect(changed)
         layout.addLayout(top)
         layout.addWidget(slider)
-        w.slider = slider  # 保留引用
+        self._sliders[key] = slider
         return w
 
     def _separator(self) -> QWidget:
@@ -332,24 +466,37 @@ class MainWindow(QMainWindow):
 
     def _collect_config(self) -> WatermarkConfig:
         return WatermarkConfig(
-            mode=self.mode_segment.currentItem() if hasattr(self, "mode_segment") else "text",
-            text=self.text_edit.text() if hasattr(self, "text_edit") else "LiteSeal",
-            font_size_pct=getattr(self, "_font_size", 6),
-            color=getattr(self, "_color", "#FFFFFF"),
+            mode=self._wm_mode,
+            text=self.text_edit.text(),
+            font_size_pct=getattr(self, "_font_size", DEFAULTS.font_size_pct),
+            color=getattr(self, "_color", DEFAULTS.color),
             image_path=self._watermark_image_path,
-            image_size_pct=getattr(self, "_image_size", 14),
-            opacity=getattr(self, "_opacity", 40),
-            rotation=getattr(self, "_rotation", -30),
-            tiled=self.tiled_switch.isChecked() if hasattr(self, "tiled_switch") else False,
-            tile_spacing=getattr(self, "_tile_spacing", 200),
-            position=self.position_combo.currentData() if hasattr(self, "position_combo") else "center",
-            margin_pct=getattr(self, "_margin", 4),
+            image_size_pct=getattr(self, "_image_size", DEFAULTS.image_size_pct),
+            opacity=getattr(self, "_opacity", DEFAULTS.opacity),
+            rotation=getattr(self, "_rotation", DEFAULTS.rotation),
+            tiled=self.tiled_switch.isChecked(),
+            tile_spacing=getattr(self, "_tile_spacing", DEFAULTS.tile_spacing),
+            position=self.position_combo.currentData() or DEFAULTS.position,
+            margin_pct=getattr(self, "_margin", DEFAULTS.margin_pct),
         )
 
     def _schedule_preview(self):
         self._preview_timer.start()
 
+    def _on_mode_changed(self, mode: str):
+        self._wm_mode = mode
+        self.mode_stack.setCurrentIndex(0 if mode == "text" else 1)
+        self.mode_segment.setCurrentItem(mode)
+        self._schedule_preview()
+
+    def _on_tiled_changed(self, checked: bool):
+        self.tile_row.setVisible(checked)
+        self.pos_widget.setVisible(not checked)
+        self.margin_row.setVisible(not checked)
+        self._schedule_preview()
+
     def _on_file_selected(self, row):
+        self._page_index = 0
         self._render_preview()
 
     def _current_file(self) -> str | None:
@@ -360,33 +507,53 @@ class MainWindow(QMainWindow):
             return self._files[row]
         return self._files[0]
 
-    def _load_preview_base(self, path: str) -> Image.Image | None:
-        ext = os.path.splitext(path)[1].lower()
-        try:
-            if ext in PDF_EXTS:
-                return pdf_page_image(path, 0, PREVIEW_MAX_PX)
-            if ext in IMAGE_EXTS:
-                with Image.open(path) as img:
-                    img = img.convert("RGBA")
-                    img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX), Image.Resampling.LANCZOS)
-                    return img.copy()
-        except Exception as e:
-            self.preview_label.setText(f"无法打开文件:\n{e}")
-        return None
-
     def _render_preview(self):
         path = self._current_file()
         if not path:
-            self.preview_label.clear()
-            self.preview_label.setText("把文件拖进左侧列表开始使用")
+            self.page_bar.hide()
+            self.preview_view.set_pixmap(None, "把文件拖进左侧列表开始使用")
             return
-        base = self._load_preview_base(path)
-        if base is None:
+
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in PDF_EXTS:
+                self._pdf_pages = pdf_page_count(path)
+                self._page_index = min(max(self._page_index, 0), self._pdf_pages - 1)
+                base = pdf_page_image(path, self._page_index, PREVIEW_MAX_PX)
+                self.page_label.setText(f"{self._page_index + 1} / {self._pdf_pages}")
+                self.page_bar.show()
+            else:
+                self.page_bar.hide()
+                with Image.open(path) as img:
+                    img = img.convert("RGBA")
+                    img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX), Image.Resampling.LANCZOS)
+                    base = img.copy()
+        except Exception as e:
+            self.page_bar.hide()
+            self.preview_view.set_pixmap(None, f"无法打开文件:\n{e}")
             return
-        result = apply_image_watermark(base, self._collect_config())
-        pixmap = _pil_to_pixmap(result)
-        self.preview_label.setText("")
-        self.preview_label.setPixmap(pixmap)
+
+        cfg = self._collect_config()
+        if cfg.mode == "image" and not cfg.image_path:
+            self.preview_view.set_pixmap(None, "图片水印:请先在右侧选择水印图片")
+            return
+        try:
+            result = apply_image_watermark(base, cfg)
+        except Exception as e:
+            self.preview_view.set_pixmap(None, f"渲染失败:\n{e}")
+            return
+        self.preview_view.set_pixmap(_pil_to_pixmap(result))
+
+    # ------------------------------------------------------------ PDF 翻页
+
+    def _on_page_change(self, delta: int):
+        path = self._current_file()
+        if not path or os.path.splitext(path)[1].lower() not in PDF_EXTS:
+            return
+        new_page = self._page_index + delta
+        if 0 <= new_page < self._pdf_pages:
+            self._page_index = new_page
+            self._render_preview()
 
     # ---------------------------------------------------------- 文件列表操作
 
@@ -401,7 +568,8 @@ class MainWindow(QMainWindow):
         if added:
             if self.file_list.currentRow() < 0:
                 self.file_list.setCurrentRow(0)
-            self._render_preview()
+            else:
+                self._render_preview()
             self.status_label.setText(f"共 {len(self._files)} 个文件(新增 {added} 个)")
         else:
             self._toast("warning", "没有可添加的文件",
@@ -424,19 +592,10 @@ class MainWindow(QMainWindow):
     def _clear_files(self):
         self.file_list.clear()
         self._files.clear()
+        self._page_index = 0
         self._render_preview()
 
     # ------------------------------------------------------------- 参数交互
-
-    def _on_mode_changed(self, mode: str):
-        self.mode_stack.setCurrentIndex(0 if mode == "text" else 1)
-        self._schedule_preview()
-
-    def _on_tiled_changed(self, checked: bool):
-        self.tile_row.setVisible(checked)
-        self.pos_widget.setVisible(not checked)
-        self.margin_row.setVisible(not checked)
-        self._schedule_preview()
 
     def _pick_color(self):
         color = QColorDialog.getColor(QColor(self._color), self, "选择文字颜色")
@@ -455,8 +614,27 @@ class MainWindow(QMainWindow):
         if path:
             self._watermark_image_path = path
             self.image_path_label.setText(os.path.basename(path))
-            self.mode_segment.setCurrentItem("image")
             self._on_mode_changed("image")
+
+    def _reset_defaults(self):
+        d = DEFAULTS
+        self._on_mode_changed("text")
+        self.text_edit.setText(d.text)
+        self._sliders["font_size"].setValue(d.font_size_pct)
+        self._color = d.color
+        self._update_color_btn()
+        self._sliders["image_size"].setValue(d.image_size_pct)
+        self._watermark_image_path = ""
+        self.image_path_label.setText("未选择(建议用带透明通道的 PNG)")
+        self._sliders["opacity"].setValue(d.opacity)
+        self._sliders["rotation"].setValue(d.rotation)
+        self.tiled_switch.setChecked(d.tiled)
+        self._sliders["tile_spacing"].setValue(d.tile_spacing)
+        self.position_combo.setCurrentIndex(POSITIONS.index(d.position))
+        self._sliders["margin"].setValue(d.margin_pct)
+        self.format_combo.setCurrentIndex(0)
+        self._schedule_preview()
+        self._toast("info", "已恢复默认设置", "所有水印参数已回到初始值")
 
     # ---------------------------------------------------------------- 导出
 

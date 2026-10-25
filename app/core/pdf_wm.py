@@ -18,6 +18,11 @@ from .models import WatermarkConfig
 _ZOOM = 2.0  # 图层渲染倍率,保证叠加进 PDF 后文字清晰
 
 
+def pdf_page_count(path: str) -> int:
+    with fitz.open(path) as doc:
+        return len(doc)
+
+
 def pdf_page_image(path: str, page_no: int = 0, max_px: int = 1400) -> Image.Image:
     """渲染 PDF 某一页为 PIL 图片,用于预览。"""
     with fitz.open(path) as doc:
