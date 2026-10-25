@@ -11,7 +11,7 @@ from collections import OrderedDict
 
 from PIL import Image
 from PySide6.QtCore import QSettings, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsTextItem, QGraphicsView,
                                QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout,
@@ -122,7 +122,15 @@ class PreviewView(QGraphicsView):
         if not self._pix_item.isVisible():
             super().wheelEvent(event)
             return
-        self._apply_zoom(1.25 if event.angleDelta().y() > 0 else 0.8)
+        delta = event.angleDelta().y()
+        if delta == 0:
+            super().wheelEvent(event)
+            return
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.08 if delta > 0 else 1 / 1.08  # Ctrl 精调
+        else:
+            factor = 1.25 if delta > 0 else 0.8
+        self._apply_zoom(factor)
         event.accept()
 
     def mouseDoubleClickEvent(self, event):
@@ -190,8 +198,19 @@ class MainWindow(QMainWindow):
         self._preview_timer.timeout.connect(self._render_preview)
 
         self._build_ui()
+        self._install_zoom_shortcuts()
         self._restore_settings()
         self._render_preview()
+
+    def _install_zoom_shortcuts(self):
+        """标准看图器快捷键:Ctrl+= 放大 / Ctrl+- 缩小 / Ctrl+0 适应窗口。"""
+        for seq, fn in (
+            (QKeySequence(QKeySequence.StandardKey.ZoomIn), self.preview_view.zoom_in),
+            (QKeySequence(QKeySequence.StandardKey.ZoomOut), self.preview_view.zoom_out),
+            (QKeySequence("Ctrl+0"), self.preview_view.fit_view),
+        ):
+            shortcut = QShortcut(seq, self)
+            shortcut.activated.connect(fn)
 
     # ------------------------------------------------------------------ UI
 
@@ -271,12 +290,13 @@ class MainWindow(QMainWindow):
         self.left_toggle.clicked.connect(lambda: self._toggle_panel("left"))
         bar.addWidget(self.left_toggle)
         btn_zoom_out = ToolButton(FIF.ZOOM_OUT)
-        btn_zoom_out.setToolTip("缩小(也可用滚轮)")
+        btn_zoom_out.setToolTip("缩小 (Ctrl+-,也可用滚轮)")
         btn_zoom_out.clicked.connect(self.preview_view.zoom_out)
         btn_zoom_in = ToolButton(FIF.ZOOM_IN)
-        btn_zoom_in.setToolTip("放大(也可用滚轮)")
+        btn_zoom_in.setToolTip("放大 (Ctrl++,也可用滚轮)")
         btn_zoom_in.clicked.connect(self.preview_view.zoom_in)
         btn_fit = PushButton("适应窗口")
+        btn_fit.setToolTip("适应窗口 (Ctrl+0,双击预览同样生效)")
         btn_fit.clicked.connect(self.preview_view.fit_view)
         self.zoom_label = BodyLabel("100%")
         self.zoom_label.setFixedWidth(46)
@@ -575,7 +595,8 @@ class MainWindow(QMainWindow):
         path = self._current_file()
         if not path:
             self.page_bar.hide()
-            self.preview_view.set_pixmap(None, "把文件拖进左侧列表开始使用")
+            self.preview_view.set_pixmap(None, "把文件拖进左侧列表开始使用\n\n"
+                                           "预览操作:滚轮缩放 · 拖拽平移 · 双击适应窗口")
             return
 
         ext = os.path.splitext(path)[1].lower()
