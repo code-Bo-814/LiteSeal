@@ -43,6 +43,7 @@ class WatermarkConfig:
     tile_spacing: int = 200     # 平铺间距,相邻水印中心距 = 水印尺寸 * spacing / 100
     position: str = "center"    # tiled=False 时生效
     margin_pct: int = 4         # 单个水印距边距,短边的百分比
+    pdf_pages: str = ""         # PDF 应用水印的页码,空=全部,例 "1,3,5-8"
 
 
 # 应用默认值,"恢复默认设置"以它为准

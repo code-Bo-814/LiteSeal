@@ -100,11 +100,13 @@ def main():
     w.text_edit.setText("XXX")
     w.tiled_switch.setChecked(True)
     w._sliders["rotation"].setValue(66)
+    w.pages_edit.setText("1-2")
     w._reset_defaults()
     cfg = w._collect_config()
     assert cfg.mode == "text" and cfg.text == "LiteSeal"
     assert cfg.opacity == 40 and cfg.rotation == -30 and cfg.tiled is False
     assert cfg.image_path == "" and cfg.tile_spacing == 200 and cfg.margin_pct == 4
+    assert cfg.pdf_pages == ""
 
     # 9) 字体选择:全部可选字体渲染无异常
     from app.core.image_wm import FONT_FILES
@@ -120,6 +122,7 @@ def main():
     w.text_edit.setText("夜班测试")
     w.tiled_switch.setChecked(True)
     w._on_font_changed(1)  # 黑体
+    w.pages_edit.setText("2-3")
     w._save_settings()
     w2 = MainWindow()
     c2 = w2._collect_config()
@@ -127,6 +130,7 @@ def main():
     assert c2.text == "夜班测试"
     assert c2.tiled is True and c2.mode == "text"
     assert c2.font_name == "黑体"
+    assert c2.pdf_pages == "2-3"
     QSettings("LiteSeal", "LiteSealTest").clear()
 
     # 11) 导出全链路:ExportWorker 同步跑,图片 + PDF 都要落盘
@@ -143,7 +147,33 @@ def main():
     assert os.path.isfile(os.path.join(out_dir, "photo_watermarked.png"))
     assert os.path.isfile(os.path.join(out_dir, "doc_watermarked.pdf"))
 
-    # 12) 侧栏收缩:两侧都可收起/展开,且状态随设置持久化
+    # 12) PDF 选页:范围解析 + 选页导出(第 2 页应无水印,页数不变)
+    from app.core.exporter import export_file
+    from app.core.pdf_wm import parse_page_spec
+    assert parse_page_spec("", 3) == [0, 1, 2]
+    assert parse_page_spec("全部", 3) == [0, 1, 2]
+    assert parse_page_spec("1,3", 3) == [0, 2]
+    assert parse_page_spec("2-4", 3) == [1, 2]  # 超出页数裁掉
+    assert parse_page_spec("1，3", 3) == [0, 2]  # 中文逗号
+    try:
+        parse_page_spec("abc", 3)
+        assert False, "非法页码应抛 ValueError"
+    except ValueError:
+        pass
+
+    w.pages_edit.setText("1,3")
+    assert w._collect_config().pdf_pages == "1,3"
+    pages_dir = os.path.join(OUT, "export_pages")
+    os.makedirs(pages_dir, exist_ok=True)
+    out_pdf = export_file(pdf, w._collect_config(), pages_dir)
+    with fitz.open(out_pdf) as d:
+        assert len(d) == 3, "选页不应减少总页数"
+        assert len(d[0].get_images()) == 1, "第 1 页应有水印"
+        assert len(d[1].get_images()) == 0, "第 2 页不应有水印"
+        assert len(d[2].get_images()) == 1, "第 3 页应有水印"
+    w.pages_edit.clear()
+
+    # 13) 侧栏收缩:两侧都可收起/展开,且状态随设置持久化
     assert not w.file_panel.isHidden() and not w.settings_panel.isHidden()
     w._toggle_panel("left")
     w._toggle_panel("right")

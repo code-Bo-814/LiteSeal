@@ -18,6 +18,41 @@ from .models import WatermarkConfig
 _ZOOM = 2.0  # 图层渲染倍率,保证叠加进 PDF 后文字清晰
 
 
+def parse_page_spec(spec: str, total: int) -> list[int]:
+    """把 "1,3,5-8" 这类页码描述解析成 0 起始页索引列表;空 / "全部" = 所有页。
+
+    超出 total 的页码裁掉;中文逗号兼容;非法写法抛 ValueError。
+    """
+    if not spec or not spec.strip() or spec.strip().lower() in ("all", "全部"):
+        return list(range(total))
+    indices: set[int] = set()
+    for token in spec.replace("，", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start_s, _, end_s = token.partition("-")
+            try:
+                start, end = int(start_s), int(end_s)
+            except ValueError:
+                raise ValueError(f"页码写法不对: {token}")
+            if start < 1 or end < start:
+                raise ValueError(f"页码写法不对: {token}")
+            indices.update(range(start - 1, min(end, total)))
+        else:
+            try:
+                page = int(token)
+            except ValueError:
+                raise ValueError(f"页码写法不对: {token}")
+            if page < 1:
+                raise ValueError(f"页码写法不对: {token}")
+            if page <= total:
+                indices.add(page - 1)
+    if not indices:
+        raise ValueError("页码范围不在文档页数内")
+    return sorted(indices)
+
+
 def pdf_page_count(path: str) -> int:
     with fitz.open(path) as doc:
         return len(doc)
@@ -34,11 +69,16 @@ def pdf_page_image(path: str, page_no: int = 0, max_px: int = 1400) -> Image.Ima
 
 def apply_pdf_watermark(src_path: str, out_path: str, cfg: WatermarkConfig,
                         progress=None) -> str:
-    """给 PDF 每一页叠加水印并另存。src == out 时通过临时文件覆盖。"""
+    """给 PDF 叠加水印并另存;cfg.pdf_pages 指定页码(空=全部)。
+
+    src == out 时通过临时文件覆盖。
+    """
     doc = fitz.open(src_path)
     try:
-        total = len(doc)
-        for i, page in enumerate(doc):
+        pages = parse_page_spec(cfg.pdf_pages, len(doc))
+        total = len(pages)
+        for i, index in enumerate(pages):
+            page = doc[index]
             rect = page.rect
             size = (max(1, round(rect.width * _ZOOM)), max(1, round(rect.height * _ZOOM)))
             layer = build_layer(size, cfg)

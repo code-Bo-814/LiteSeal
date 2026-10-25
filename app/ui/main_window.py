@@ -403,6 +403,18 @@ class MainWindow(QMainWindow):
         out_layout.addWidget(self.format_combo, stretch=1)
         layout.addWidget(out_widget)
 
+        pages_widget = QWidget()
+        pages_layout = QHBoxLayout(pages_widget)
+        pages_layout.setContentsMargins(0, 0, 0, 0)
+        pages_layout.addWidget(BodyLabel("水印页面"))
+        self.pages_edit = LineEdit()
+        self.pages_edit.setPlaceholderText("全部;或如 1,3,5-8")
+        self.pages_edit.setClearButtonEnabled(True)
+        pages_layout.addWidget(self.pages_edit, stretch=1)
+        self.pages_row = pages_widget
+        layout.addWidget(pages_widget)
+        self.pages_row.hide()  # 只在选中 PDF 时显示
+
         self.reset_btn = PushButton(FIF.SYNC, "恢复默认设置")
         self.reset_btn.clicked.connect(self._reset_defaults)
         layout.addWidget(self.reset_btn)
@@ -535,6 +547,7 @@ class MainWindow(QMainWindow):
             tile_spacing=getattr(self, "_tile_spacing", DEFAULTS.tile_spacing),
             position=self.position_combo.currentData() or DEFAULTS.position,
             margin_pct=getattr(self, "_margin", DEFAULTS.margin_pct),
+            pdf_pages=self.pages_edit.text().strip(),
         )
 
     def _schedule_preview(self):
@@ -595,6 +608,7 @@ class MainWindow(QMainWindow):
         path = self._current_file()
         if not path:
             self.page_bar.hide()
+            self.pages_row.hide()
             self.preview_view.set_pixmap(None, "把文件拖进左侧列表开始使用\n\n"
                                            "预览操作:滚轮缩放 · 拖拽平移 · 双击适应窗口")
             return
@@ -606,11 +620,14 @@ class MainWindow(QMainWindow):
                 self._page_index = min(max(self._page_index, 0), self._pdf_pages - 1)
                 self.page_label.setText(f"{self._page_index + 1} / {self._pdf_pages}")
                 self.page_bar.show()
+                self.pages_row.show()
             else:
                 self.page_bar.hide()
+                self.pages_row.hide()
             base = self._get_base(path, ext)
         except Exception as e:
             self.page_bar.hide()
+            self.pages_row.hide()
             self.preview_view.set_pixmap(None, f"无法打开文件:\n{e}")
             return
 
@@ -733,6 +750,7 @@ class MainWindow(QMainWindow):
         self.position_combo.setCurrentIndex(POSITIONS.index(d.position))
         self._sliders["margin"].setValue(d.margin_pct)
         self.format_combo.setCurrentIndex(0)
+        self.pages_edit.clear()
         self._schedule_preview()
         self._toast("info", "已恢复默认设置", "所有水印参数已回到初始值")
 
@@ -753,8 +771,9 @@ class MainWindow(QMainWindow):
         cfg = self._collect_config()
 
         self._worker = ExportWorker(list(self._files), cfg, out_dir, img_format, self)
+        self._export_errors: list[str] = []
         self._worker.progress.connect(self._on_export_progress)
-        self._worker.file_failed.connect(lambda p, err: print(f"[失败] {p}: {err}"))
+        self._worker.file_failed.connect(self._on_file_failed)
         self._worker.finished_all.connect(self._on_export_finished)
         self.export_btn.setEnabled(False)
         self.progress.show()
@@ -766,13 +785,18 @@ class MainWindow(QMainWindow):
         self.progress.setValue(current - 1)
         self.status_label.setText(f"正在处理 {current}/{total}:{name}")
 
+    def _on_file_failed(self, path: str, err: str):
+        self._export_errors.append(f"{os.path.basename(path)}: {err}")
+
     def _on_export_finished(self, ok: int, fail: int):
         self.progress.hide()
         self.export_btn.setEnabled(True)
         self._worker = None
         self.status_label.setText(f"导出完成:成功 {ok} 个,失败 {fail} 个")
         if fail:
-            self._toast("warning", "部分文件导出失败", f"成功 {ok} 个,失败 {fail} 个,详情见控制台")
+            detail = ";".join(self._export_errors[:2])
+            self._toast("warning", "部分文件导出失败",
+                        f"成功 {ok} 个,失败 {fail} 个 · {detail}")
         else:
             self._toast("success", "导出完成", f"成功导出 {ok} 个文件")
         if ok:
@@ -818,6 +842,7 @@ class MainWindow(QMainWindow):
         s.setValue("wm/margin_pct", cfg.margin_pct)
         s.setValue("out/format_index", self.format_combo.currentIndex())
         s.setValue("out/last_dir", self._last_out_dir)
+        s.setValue("wm/pdf_pages", self.pages_edit.text().strip())
         s.setValue("ui/geometry", self.saveGeometry())
         s.setValue("ui/left_collapsed", self.file_panel.isHidden())
         s.setValue("ui/right_collapsed", self.settings_panel.isHidden())
@@ -864,6 +889,9 @@ class MainWindow(QMainWindow):
             last_dir = s.value("out/last_dir", "")
             if isinstance(last_dir, str):
                 self._last_out_dir = last_dir
+            pdf_pages = s.value("wm/pdf_pages", "")
+            if isinstance(pdf_pages, str):
+                self.pages_edit.setText(pdf_pages)
             geometry = s.value("ui/geometry")
             if geometry is not None:
                 self.restoreGeometry(geometry)
