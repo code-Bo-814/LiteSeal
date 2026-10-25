@@ -13,18 +13,24 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .models import WatermarkConfig
 
-# Windows 常见中文字体,按优先级尝试
-_FONT_CANDIDATES = [
-    "msyh.ttc",      # 微软雅黑
-    "simhei.ttf",    # 黑体
-    "simsun.ttc",    # 宋体
-    "arial.ttf",
-]
+# 可选字体:名称 -> Windows 字体文件(按此顺序兜底)
+FONT_FILES = {
+    "微软雅黑": "msyh.ttc",
+    "黑体": "simhei.ttf",
+    "宋体": "simsun.ttc",
+    "楷体": "simkai.ttf",
+    "仿宋": "simfang.ttf",
+    "Arial": "arial.ttf",
+}
 
 
-def load_font(px: int) -> ImageFont.FreeTypeFont:
-    for name in _FONT_CANDIDATES:
-        path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", name)
+def load_font(px: int, name: str = "微软雅黑") -> ImageFont.FreeTypeFont:
+    candidates = []
+    if name in FONT_FILES:
+        candidates.append(FONT_FILES[name])
+    candidates.extend(f for n, f in FONT_FILES.items() if n != name)
+    for fname in candidates:
+        path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", fname)
         try:
             return ImageFont.truetype(path, max(8, px))
         except OSError:
@@ -42,7 +48,7 @@ def _apply_opacity(img: Image.Image, opacity: int) -> Image.Image:
 
 def _text_element(cfg: WatermarkConfig, base_px: int) -> Image.Image:
     px = max(8, round(base_px * cfg.font_size_pct / 100))
-    font = load_font(px)
+    font = load_font(px, cfg.font_name)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     left, top, right, bottom = probe.textbbox((0, 0), cfg.text or " ", font=font)
     pad = max(2, px // 8)

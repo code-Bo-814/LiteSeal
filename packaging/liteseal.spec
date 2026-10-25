@@ -13,6 +13,8 @@ for pkg in ("qfluentwidgets",):
     binaries += b
     hiddenimports += h
 
+datas.append((os.path.join(ROOT, "app", "resources", "icon.png"), "app/resources"))
+
 a = Analysis(
     [os.path.join(ROOT, "main.py")],
     pathex=[ROOT],
@@ -39,6 +41,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=os.path.join(ROOT, "app", "resources", "icon.ico"),
 )
 
 coll = COLLECT(

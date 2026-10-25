@@ -6,13 +6,14 @@
 
 ## 功能
 
-- 支持 **PNG / JPG / WEBP / BMP / PDF** 批量加水印,可直接拖拽导入
-- **文字水印**:自定义内容、大小、颜色、透明度、旋转角度
+- 支持 **PNG / JPG / WEBP / BMP / PDF** 批量加水印,可直接拖拽导入(列表内按 Delete 删除)
+- **文字水印**:六种中文字体、自定义内容、大小、颜色、透明度、旋转角度
 - **图片水印**:用 PNG logo 盖章,支持缩放
 - 两种布局:**九宫格单枚摆放**(位置 + 边距)或 **平铺整个画面**(密度可调)
 - 所见即所得的实时预览,始终保持宽高比:滚轮缩放、拖拽平移、双击/按钮适应窗口
 - PDF 预览支持翻页逐页查看(导出仍作用于全部页面)
-- 一键恢复默认水印参数
+- 自动记住上次的水印参数、输出目录和窗口大小,下次启动直接就绪
+- 导出完成后可一键打开输出文件夹;一键恢复默认水印参数
 - 图片可保持原格式或统一输出为 PNG / JPG / WEBP;PDF 输出 `xxx_watermarked.pdf`
 - 导出在后台线程进行,界面不卡顿
 
@@ -62,9 +63,10 @@ LiteSeal/
 │   │   ├── image_wm.py     # Pillow 图层引擎(图片与 PDF 共用)
 │   │   ├── pdf_wm.py       # PyMuPDF PDF 水印
 │   │   └── exporter.py     # 批量导出分发
-│   └── ui/
-│       ├── main_window.py  # 主窗口
-│       └── workers.py      # 导出线程
+│   ├── ui/
+│   │   ├── main_window.py  # 主窗口
+│   │   └── workers.py      # 导出线程
+│   └── resources/          # 应用图标(make_icon.py 可重新生成)
 ├── packaging/              # PyInstaller spec / Inno Setup 脚本 / 构建脚本
 └── tests/                  # 冒烟测试
 ```

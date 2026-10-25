@@ -28,6 +28,7 @@ class WatermarkConfig:
 
     # 文字水印
     text: str = "LiteSeal"
+    font_name: str = "微软雅黑"
     font_size_pct: int = 6      # 文字高度 ≈ 短边 * pct / 100
     color: str = "#FFFFFF"
 

@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 
 from PIL import Image
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QSettings, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsTextItem, QGraphicsView,
@@ -22,7 +23,7 @@ from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             SwitchButton, ToolButton)
 
 from app import APP_NAME, __version__
-from app.core.image_wm import apply_image_watermark
+from app.core.image_wm import FONT_FILES, apply_image_watermark
 from app.core.models import (DEFAULTS, IMAGE_EXTS, PDF_EXTS, POSITION_LABELS,
                              POSITIONS, SUPPORTED_EXTS, WatermarkConfig)
 from app.core.pdf_wm import pdf_page_count, pdf_page_image
@@ -133,6 +134,7 @@ class FileList(ListWidget):
     """支持拖拽导入的文件列表。"""
 
     files_dropped = Signal(list)
+    delete_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,6 +161,12 @@ class FileList(ListWidget):
         else:
             super().dropEvent(event)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Delete and self.currentRow() >= 0:
+            self.delete_requested.emit()
+        else:
+            super().keyPressEvent(event)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -174,12 +182,15 @@ class MainWindow(QMainWindow):
         self._page_index = 0
         self._pdf_pages = 1
         self._sliders: dict[str, Slider] = {}
+        self._last_out_dir = ""
+        self._base_cache: OrderedDict[tuple, Image.Image] = OrderedDict()
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(150)
         self._preview_timer.timeout.connect(self._render_preview)
 
         self._build_ui()
+        self._restore_settings()
         self._render_preview()
 
     # ------------------------------------------------------------------ UI
@@ -221,6 +232,7 @@ class MainWindow(QMainWindow):
         self.file_list = FileList()
         self.file_list.currentRowChanged.connect(self._on_file_selected)
         self.file_list.files_dropped.connect(self.add_files)
+        self.file_list.delete_requested.connect(self._remove_selected)
         layout.addWidget(self.file_list, stretch=1)
 
         btn_row = QHBoxLayout()
@@ -385,6 +397,16 @@ class MainWindow(QMainWindow):
         self.text_edit.textChanged.connect(self._schedule_preview)
         layout.addWidget(self.text_edit)
 
+        font_widget = QWidget()
+        font_layout = QHBoxLayout(font_widget)
+        font_layout.setContentsMargins(0, 0, 0, 0)
+        font_layout.addWidget(BodyLabel("字体"))
+        self.font_combo = ComboBox()
+        self.font_combo.addItems(list(FONT_FILES))
+        self.font_combo.currentIndexChanged.connect(self._on_font_changed)
+        font_layout.addWidget(self.font_combo, stretch=1)
+        layout.addWidget(font_widget)
+
         layout.addWidget(self._slider_row("font_size", "文字大小", 3, 30, 6, "%", "_font_size"))
 
         color_widget = QWidget()
@@ -459,6 +481,10 @@ class MainWindow(QMainWindow):
         self.status_label = BodyLabel("就绪")
         self.status_label.setTextColor(QColor(128, 128, 128), QColor(160, 160, 160))
         layout.addWidget(self.status_label, stretch=1)
+        self.open_dir_btn = PushButton(FIF.FOLDER, "打开输出文件夹")
+        self.open_dir_btn.hide()
+        self.open_dir_btn.clicked.connect(self._open_last_dir)
+        layout.addWidget(self.open_dir_btn)
         layout.addWidget(self.progress)
         return bar
 
@@ -468,6 +494,7 @@ class MainWindow(QMainWindow):
         return WatermarkConfig(
             mode=self._wm_mode,
             text=self.text_edit.text(),
+            font_name=getattr(self, "_font_name", DEFAULTS.font_name),
             font_size_pct=getattr(self, "_font_size", DEFAULTS.font_size_pct),
             color=getattr(self, "_color", DEFAULTS.color),
             image_path=self._watermark_image_path,
@@ -489,6 +516,12 @@ class MainWindow(QMainWindow):
         self.mode_segment.setCurrentItem(mode)
         self._schedule_preview()
 
+    def _on_font_changed(self, index: int):
+        names = list(FONT_FILES)
+        if 0 <= index < len(names):
+            self._font_name = names[index]
+            self._schedule_preview()
+
     def _on_tiled_changed(self, checked: bool):
         self.tile_row.setVisible(checked)
         self.pos_widget.setVisible(not checked)
@@ -507,6 +540,27 @@ class MainWindow(QMainWindow):
             return self._files[row]
         return self._files[0]
 
+    MAX_BASE_CACHE = 6
+
+    def _get_base(self, path: str, ext: str) -> Image.Image:
+        """底图缓存:调滑块时免掉反复解码大图 / PDF 页面的开销。"""
+        page = self._page_index if ext in PDF_EXTS else 0
+        key = (path, page)
+        if key in self._base_cache:
+            self._base_cache.move_to_end(key)
+            return self._base_cache[key]
+        if ext in PDF_EXTS:
+            img = pdf_page_image(path, page, PREVIEW_MAX_PX).convert("RGBA")
+        else:
+            with Image.open(path) as img:
+                img = img.convert("RGBA")
+                img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX), Image.Resampling.LANCZOS)
+                img = img.copy()
+        self._base_cache[key] = img
+        if len(self._base_cache) > self.MAX_BASE_CACHE:
+            self._base_cache.popitem(last=False)
+        return img
+
     def _render_preview(self):
         path = self._current_file()
         if not path:
@@ -519,15 +573,11 @@ class MainWindow(QMainWindow):
             if ext in PDF_EXTS:
                 self._pdf_pages = pdf_page_count(path)
                 self._page_index = min(max(self._page_index, 0), self._pdf_pages - 1)
-                base = pdf_page_image(path, self._page_index, PREVIEW_MAX_PX)
                 self.page_label.setText(f"{self._page_index + 1} / {self._pdf_pages}")
                 self.page_bar.show()
             else:
                 self.page_bar.hide()
-                with Image.open(path) as img:
-                    img = img.convert("RGBA")
-                    img.thumbnail((PREVIEW_MAX_PX, PREVIEW_MAX_PX), Image.Resampling.LANCZOS)
-                    base = img.copy()
+            base = self._get_base(path, ext)
         except Exception as e:
             self.page_bar.hide()
             self.preview_view.set_pixmap(None, f"无法打开文件:\n{e}")
@@ -566,6 +616,7 @@ class MainWindow(QMainWindow):
                 self.file_list.addItem(os.path.basename(p))
                 added += 1
         if added:
+            self._base_cache.clear()
             if self.file_list.currentRow() < 0:
                 self.file_list.setCurrentRow(0)
             else:
@@ -587,11 +638,13 @@ class MainWindow(QMainWindow):
             return
         self.file_list.takeItem(row)
         del self._files[row]
+        self._base_cache.clear()
         self._render_preview()
 
     def _clear_files(self):
         self.file_list.clear()
         self._files.clear()
+        self._base_cache.clear()
         self._page_index = 0
         self._render_preview()
 
@@ -620,6 +673,7 @@ class MainWindow(QMainWindow):
         d = DEFAULTS
         self._on_mode_changed("text")
         self.text_edit.setText(d.text)
+        self.font_combo.setCurrentIndex(list(FONT_FILES).index(d.font_name))
         self._sliders["font_size"].setValue(d.font_size_pct)
         self._color = d.color
         self._update_color_btn()
@@ -647,6 +701,8 @@ class MainWindow(QMainWindow):
         out_dir = QFileDialog.getExistingDirectory(self, "选择输出文件夹")
         if not out_dir:
             return
+        self._last_out_dir = out_dir
+        self.open_dir_btn.hide()
         img_format = ["keep", "png", "jpg", "webp"][self.format_combo.currentIndex()]
         cfg = self._collect_config()
 
@@ -673,6 +729,12 @@ class MainWindow(QMainWindow):
             self._toast("warning", "部分文件导出失败", f"成功 {ok} 个,失败 {fail} 个,详情见控制台")
         else:
             self._toast("success", "导出完成", f"成功导出 {ok} 个文件")
+        if ok:
+            self.open_dir_btn.show()
+
+    def _open_last_dir(self):
+        if self._last_out_dir and os.path.isdir(self._last_out_dir) and hasattr(os, "startfile"):
+            os.startfile(self._last_out_dir)
 
     def _toast(self, kind: str, title: str, content: str):
         show = getattr(InfoBar, kind)
@@ -683,4 +745,79 @@ class MainWindow(QMainWindow):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(3000)
+        self._save_settings()
         super().closeEvent(event)
+
+    # ------------------------------------------------------------ 设置持久化
+
+    def _settings(self) -> QSettings:
+        app_name = os.environ.get("LITESEAL_QSETTINGS_APP", "LiteSeal")
+        return QSettings("LiteSeal", app_name)
+
+    def _save_settings(self):
+        s = self._settings()
+        cfg = self._collect_config()
+        s.setValue("wm/mode", cfg.mode)
+        s.setValue("wm/text", cfg.text)
+        s.setValue("wm/font_name", cfg.font_name)
+        s.setValue("wm/font_size_pct", cfg.font_size_pct)
+        s.setValue("wm/color", cfg.color)
+        s.setValue("wm/image_path", self._watermark_image_path)
+        s.setValue("wm/image_size_pct", cfg.image_size_pct)
+        s.setValue("wm/opacity", cfg.opacity)
+        s.setValue("wm/rotation", cfg.rotation)
+        s.setValue("wm/tiled", cfg.tiled)
+        s.setValue("wm/tile_spacing", cfg.tile_spacing)
+        s.setValue("wm/position", cfg.position)
+        s.setValue("wm/margin_pct", cfg.margin_pct)
+        s.setValue("out/format_index", self.format_combo.currentIndex())
+        s.setValue("out/last_dir", self._last_out_dir)
+        s.setValue("ui/geometry", self.saveGeometry())
+        s.sync()
+
+    def _restore_settings(self):
+        """启动时恢复上次的水印参数 / 输出目录 / 窗口大小,失败则用默认值。"""
+        try:
+            s = self._settings()
+            mode = s.value("wm/mode", "text")
+            if mode in ("text", "image") and mode != self._wm_mode:
+                self._on_mode_changed(mode)
+            if s.contains("wm/text"):
+                self.text_edit.setText(s.value("wm/text"))
+            font_name = s.value("wm/font_name", "")
+            if font_name in FONT_FILES:
+                self.font_combo.setCurrentIndex(list(FONT_FILES).index(font_name))
+            for key, slider_key, default, lo, hi in (
+                ("wm/font_size_pct", "font_size", DEFAULTS.font_size_pct, 3, 30),
+                ("wm/image_size_pct", "image_size", DEFAULTS.image_size_pct, 3, 60),
+                ("wm/opacity", "opacity", DEFAULTS.opacity, 5, 100),
+                ("wm/rotation", "rotation", DEFAULTS.rotation, -90, 90),
+                ("wm/tile_spacing", "tile_spacing", DEFAULTS.tile_spacing, 120, 400),
+                ("wm/margin_pct", "margin", DEFAULTS.margin_pct, 0, 20),
+            ):
+                value = max(lo, min(hi, int(s.value(key, default, type=int))))
+                self._sliders[slider_key].setValue(value)
+            color = s.value("wm/color", "")
+            if isinstance(color, str) and color.startswith("#"):
+                self._color = color
+                self._update_color_btn()
+            image_path = s.value("wm/image_path", "")
+            if isinstance(image_path, str) and os.path.isfile(image_path):
+                self._watermark_image_path = image_path
+                self.image_path_label.setText(os.path.basename(image_path))
+            if s.value("wm/tiled", False, type=bool):
+                self.tiled_switch.setChecked(True)
+            position = s.value("wm/position", "")
+            if position in POSITIONS:
+                self.position_combo.setCurrentIndex(POSITIONS.index(position))
+            fmt = int(s.value("out/format_index", 0, type=int))
+            if 0 <= fmt < self.format_combo.count():
+                self.format_combo.setCurrentIndex(fmt)
+            last_dir = s.value("out/last_dir", "")
+            if isinstance(last_dir, str):
+                self._last_out_dir = last_dir
+            geometry = s.value("ui/geometry")
+            if geometry is not None:
+                self.restoreGeometry(geometry)
+        except Exception as e:
+            print(f"[LiteSeal] 恢复设置失败: {e}")

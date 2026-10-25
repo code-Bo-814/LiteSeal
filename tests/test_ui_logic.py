@@ -7,6 +7,7 @@ import os
 import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("LITESEAL_QSETTINGS_APP", "LiteSealTest")  # 持久化测试隔离,不污染真实设置
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -103,6 +104,29 @@ def main():
     assert cfg.mode == "text" and cfg.text == "LiteSeal"
     assert cfg.opacity == 40 and cfg.rotation == -30 and cfg.tiled is False
     assert cfg.image_path == "" and cfg.tile_spacing == 200 and cfg.margin_pct == 4
+
+    # 9) 字体选择:全部可选字体渲染无异常
+    from app.core.image_wm import FONT_FILES
+    for name in FONT_FILES:
+        w._on_font_changed(list(FONT_FILES).index(name))
+        w._render_preview()
+    assert w._collect_config().font_name == list(FONT_FILES)[-1]
+
+    # 10) 设置持久化:保存后新窗口应恢复(独立 QSettings 命名空间)
+    from PySide6.QtCore import QSettings
+    QSettings("LiteSeal", "LiteSealTest").clear()
+    w._sliders["opacity"].setValue(77)
+    w.text_edit.setText("夜班测试")
+    w.tiled_switch.setChecked(True)
+    w._on_font_changed(1)  # 黑体
+    w._save_settings()
+    w2 = MainWindow()
+    c2 = w2._collect_config()
+    assert c2.opacity == 77, c2
+    assert c2.text == "夜班测试"
+    assert c2.tiled is True and c2.mode == "text"
+    assert c2.font_name == "黑体"
+    QSettings("LiteSeal", "LiteSealTest").clear()
 
     print("UI LOGIC TESTS PASSED")
 
