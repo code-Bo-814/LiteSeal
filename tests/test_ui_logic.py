@@ -143,6 +143,21 @@ def main():
     assert os.path.isfile(os.path.join(out_dir, "photo_watermarked.png"))
     assert os.path.isfile(os.path.join(out_dir, "doc_watermarked.pdf"))
 
+    # 12) 侧栏收缩:两侧都可收起/展开,且状态随设置持久化
+    assert not w.file_panel.isHidden() and not w.settings_panel.isHidden()
+    w._toggle_panel("left")
+    w._toggle_panel("right")
+    assert w.file_panel.isHidden() and w.settings_panel.isHidden()
+    w._toggle_panel("left")
+    w._toggle_panel("right")
+    assert not w.file_panel.isHidden() and not w.settings_panel.isHidden()
+    w._toggle_panel("left")
+    w._toggle_panel("right")
+    w._save_settings()
+    w3 = MainWindow()
+    assert w3.file_panel.isHidden() and w3.settings_panel.isHidden(), "收起状态应被恢复"
+    QSettings("LiteSeal", "LiteSealTest").clear()
+
     print("UI LOGIC TESTS PASSED")
 
 

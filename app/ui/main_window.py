@@ -213,9 +213,11 @@ class MainWindow(QMainWindow):
 
         content = QHBoxLayout()
         content.setSpacing(10)
-        content.addWidget(self._build_file_panel(), stretch=0)
+        self.file_panel = self._build_file_panel()
+        self.settings_panel = self._build_settings_panel()
+        content.addWidget(self.file_panel, stretch=0)
         content.addWidget(self._build_preview_panel(), stretch=1)
-        content.addWidget(self._build_settings_panel(), stretch=0)
+        content.addWidget(self.settings_panel, stretch=0)
         root.addLayout(content, stretch=1)
 
         root.addWidget(self._build_status_bar())
@@ -264,6 +266,10 @@ class MainWindow(QMainWindow):
 
         bar = QHBoxLayout()
         bar.setSpacing(6)
+        self.left_toggle = ToolButton(FIF.CARE_LEFT_SOLID)
+        self.left_toggle.setToolTip("收起文件面板")
+        self.left_toggle.clicked.connect(lambda: self._toggle_panel("left"))
+        bar.addWidget(self.left_toggle)
         btn_zoom_out = ToolButton(FIF.ZOOM_OUT)
         btn_zoom_out.setToolTip("缩小(也可用滚轮)")
         btn_zoom_out.clicked.connect(self.preview_view.zoom_out)
@@ -298,6 +304,10 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(self.page_label)
         page_layout.addWidget(page_next)
         bar.addWidget(self.page_bar)
+        self.right_toggle = ToolButton(FIF.CARE_RIGHT_SOLID)
+        self.right_toggle.setToolTip("收起参数面板")
+        self.right_toggle.clicked.connect(lambda: self._toggle_panel("right"))
+        bar.addWidget(self.right_toggle)
         layout.addLayout(bar)
         return panel
 
@@ -605,6 +615,21 @@ class MainWindow(QMainWindow):
             self._page_index = new_page
             self._render_preview()
 
+    # ------------------------------------------------------------ 侧栏收缩
+
+    def _toggle_panel(self, side: str):
+        """收起 / 展开某一侧面板,预览区自动占满剩余空间。"""
+        panel = self.file_panel if side == "left" else self.settings_panel
+        button = self.left_toggle if side == "left" else self.right_toggle
+        hiding = not panel.isHidden()
+        panel.setVisible(not hiding)
+        if side == "left":
+            button.setIcon(FIF.CARE_RIGHT_SOLID.icon() if hiding else FIF.CARE_LEFT_SOLID.icon())
+            button.setToolTip("展开文件面板" if hiding else "收起文件面板")
+        else:
+            button.setIcon(FIF.CARE_LEFT_SOLID.icon() if hiding else FIF.CARE_RIGHT_SOLID.icon())
+            button.setToolTip("展开参数面板" if hiding else "收起参数面板")
+
     # ---------------------------------------------------------- 文件列表操作
 
     def add_files(self, paths: list[str]):
@@ -773,6 +798,8 @@ class MainWindow(QMainWindow):
         s.setValue("out/format_index", self.format_combo.currentIndex())
         s.setValue("out/last_dir", self._last_out_dir)
         s.setValue("ui/geometry", self.saveGeometry())
+        s.setValue("ui/left_collapsed", self.file_panel.isHidden())
+        s.setValue("ui/right_collapsed", self.settings_panel.isHidden())
         s.sync()
 
     def _restore_settings(self):
@@ -819,5 +846,9 @@ class MainWindow(QMainWindow):
             geometry = s.value("ui/geometry")
             if geometry is not None:
                 self.restoreGeometry(geometry)
+            if s.value("ui/left_collapsed", False, type=bool) != self.file_panel.isHidden():
+                self._toggle_panel("left")
+            if s.value("ui/right_collapsed", False, type=bool) != self.settings_panel.isHidden():
+                self._toggle_panel("right")
         except Exception as e:
             print(f"[LiteSeal] 恢复设置失败: {e}")
