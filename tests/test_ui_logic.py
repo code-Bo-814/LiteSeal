@@ -59,7 +59,8 @@ def main():
     assert cfg.mode == "image" and cfg.image_path == logo, cfg
 
     # 3) 图片水印预览真实渲染(以前在这里静默抛异常 => 功能"失效")
-    w.add_files([make_photo()])
+    photo_path = make_photo()
+    w.add_files([photo_path])
     w._render_preview()
     assert not w.preview_view._pix_item.pixmap().isNull(), "图片水印预览未渲染"
 
@@ -127,6 +128,20 @@ def main():
     assert c2.tiled is True and c2.mode == "text"
     assert c2.font_name == "黑体"
     QSettings("LiteSeal", "LiteSealTest").clear()
+
+    # 11) 导出全链路:ExportWorker 同步跑,图片 + PDF 都要落盘
+    from app.ui.workers import ExportWorker
+    out_dir = os.path.join(OUT, "export_e2e")
+    os.makedirs(out_dir, exist_ok=True)
+    worker = ExportWorker([photo_path, pdf], w._collect_config(), out_dir, "png")
+    results = {"done": [], "fail": []}
+    worker.file_done.connect(lambda p, out: results["done"].append(out))
+    worker.file_failed.connect(lambda p, err: results["fail"].append(err))
+    worker.run()  # 同步执行,不起线程
+    assert not results["fail"], results["fail"]
+    assert len(results["done"]) == 2, results
+    assert os.path.isfile(os.path.join(out_dir, "photo_watermarked.png"))
+    assert os.path.isfile(os.path.join(out_dir, "doc_watermarked.pdf"))
 
     print("UI LOGIC TESTS PASSED")
 
