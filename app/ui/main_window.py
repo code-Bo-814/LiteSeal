@@ -10,7 +10,7 @@ import os
 from collections import OrderedDict
 
 from PIL import Image, ImageOps
-from PySide6.QtCore import QSettings, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QSettings, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsTextItem, QGraphicsView,
@@ -23,7 +23,7 @@ from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             SwitchButton, ToolButton)
 
 from app import APP_NAME, __version__
-from app.core.image_wm import FONT_FILES, apply_image_watermark
+from app.core.image_wm import FONT_FILES, apply_image_watermark, build_element, element_position
 from app.core.models import (DEFAULTS, IMAGE_EXTS, PDF_EXTS, POSITION_LABELS,
                              POSITIONS, SUPPORTED_EXTS, WatermarkConfig)
 from app.core.pdf_wm import pdf_page_count, pdf_page_image
@@ -44,6 +44,7 @@ class PreviewView(QGraphicsView):
     """可滚轮缩放、拖拽平移、双击复位的预览区,始终保持宽高比。"""
 
     zoom_changed = Signal(float)  # 当前缩放百分比
+    wm_moved = Signal(float, float)  # 水印中心在画面里的比例位置
 
     MIN_SCALE = 0.05
     MAX_SCALE = 12.0
@@ -55,6 +56,11 @@ class PreviewView(QGraphicsView):
         self._pix_item = QGraphicsPixmapItem()
         self._pix_item.setVisible(False)
         self._scene.addItem(self._pix_item)
+        self._wm_item = QGraphicsPixmapItem()  # 非平铺时的独立水印层,可拖动
+        self._wm_item.setVisible(False)
+        self._scene.addItem(self._wm_item)
+        self._dragging_wm = False
+        self._drag_grab = QPointF()
         self._hint_item = QGraphicsTextItem()
         font = self._hint_item.font()
         font.setPointSize(13)
@@ -73,6 +79,8 @@ class PreviewView(QGraphicsView):
 
     def set_pixmap(self, pixmap: QPixmap | None, hint: str = ""):
         self._auto_fit = True
+        self._wm_item.setVisible(False)
+        self._dragging_wm = False
         if pixmap is None or pixmap.isNull():
             self._pix_item.setVisible(False)
             self._hint_item.setPlainText(hint or "")
@@ -85,6 +93,19 @@ class PreviewView(QGraphicsView):
             self._pix_item.setVisible(True)
             self._scene.setSceneRect(QRectF(pixmap.rect()))
             QTimer.singleShot(0, self.fit_view)
+        self.zoom_changed.emit(self.current_zoom())
+
+    def set_content(self, base: QPixmap, watermark: QPixmap, pos: tuple[int, int]):
+        """分层显示:底图 + 独立水印元素(左上角在 pos,可拖动)。"""
+        self._auto_fit = True
+        self._hint_item.setVisible(False)
+        self._pix_item.setPixmap(base)
+        self._pix_item.setVisible(True)
+        self._wm_item.setPixmap(watermark)
+        self._wm_item.setPos(QPointF(pos[0], pos[1]))
+        self._wm_item.setVisible(True)
+        self._scene.setSceneRect(QRectF(base.rect()))
+        QTimer.singleShot(0, self.fit_view)
         self.zoom_changed.emit(self.current_zoom())
 
     def fit_view(self):
@@ -132,6 +153,51 @@ class PreviewView(QGraphicsView):
             factor = 1.25 if delta > 0 else 0.8
         self._apply_zoom(factor)
         event.accept()
+
+    # ---- 水印拖动:按在水印上拖元素,按在空白处平移画面 ----
+
+    def _over_watermark(self, scene_pos: QPointF) -> bool:
+        return (self._wm_item.isVisible()
+                and self._wm_item.contains(self._wm_item.mapFromScene(scene_pos)))
+
+    def mousePressEvent(self, event):
+        scene_pos = self.mapToScene(event.position().toPoint())
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self._over_watermark(scene_pos)):
+            self._dragging_wm = True
+            self._drag_grab = scene_pos - self._wm_item.pos()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        scene_pos = self.mapToScene(event.position().toPoint())
+        if self._dragging_wm:
+            rect = self._scene.sceneRect()
+            pm = self._wm_item.pixmap()
+            new_pos = scene_pos - self._drag_grab
+            x = min(max(new_pos.x(), 0), max(0, rect.width() - pm.width()))
+            y = min(max(new_pos.y(), 0), max(0, rect.height() - pm.height()))
+            self._wm_item.setPos(x, y)
+            fx = (x + pm.width() / 2) / rect.width() if rect.width() else 0.5
+            fy = (y + pm.height() / 2) / rect.height() if rect.height() else 0.5
+            self.wm_moved.emit(min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0))
+            event.accept()
+            return
+        if self._pix_item.isVisible():
+            self.viewport().setCursor(
+                Qt.CursorShape.OpenHandCursor if self._over_watermark(scene_pos)
+                else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging_wm:
+            self._dragging_wm = False
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         self.fit_view()
@@ -281,6 +347,7 @@ class MainWindow(QMainWindow):
         self.preview_view = PreviewView()
         self.preview_view.zoom_changed.connect(
             lambda pct: self.zoom_label.setText(f"{round(pct)}%"))
+        self.preview_view.wm_moved.connect(self._on_wm_moved)
         layout.addWidget(self.preview_view, stretch=1)
 
         bar = QHBoxLayout()
@@ -382,8 +449,9 @@ class MainWindow(QMainWindow):
         self.position_combo = ComboBox()
         for key in POSITIONS:
             self.position_combo.addItem(POSITION_LABELS[key], userData=key)
+        self.position_combo.addItem("自定义", userData="custom")
         self.position_combo.setCurrentIndex(POSITIONS.index(DEFAULTS.position))
-        self.position_combo.currentIndexChanged.connect(self._schedule_preview)
+        self.position_combo.currentIndexChanged.connect(self._on_position_changed)
         pos_layout.addWidget(self.position_combo, stretch=1)
         self.pos_widget = pos_widget
         layout.addWidget(pos_widget)
@@ -548,6 +616,7 @@ class MainWindow(QMainWindow):
             position=self.position_combo.currentData() or DEFAULTS.position,
             margin_pct=getattr(self, "_margin", DEFAULTS.margin_pct),
             pdf_pages=self.pages_edit.text().strip(),
+            custom_pos=getattr(self, "_custom_pos", None),
         )
 
     def _schedule_preview(self):
@@ -564,6 +633,19 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(names):
             self._font_name = names[index]
             self._schedule_preview()
+
+    def _on_position_changed(self, index: int):
+        if self.position_combo.currentData() != "custom":
+            self._custom_pos = None  # 选回九宫格即清除拖动位置
+        self._schedule_preview()
+
+    def _on_wm_moved(self, fx: float, fy: float):
+        self._custom_pos = (fx, fy)
+        idx = self.position_combo.findData("custom")
+        if idx >= 0 and self.position_combo.currentIndex() != idx:
+            self.position_combo.blockSignals(True)  # 只同步显示,避免触发渲染循环
+            self.position_combo.setCurrentIndex(idx)
+            self.position_combo.blockSignals(False)
 
     def _on_tiled_changed(self, checked: bool):
         self.tile_row.setVisible(checked)
@@ -611,7 +693,7 @@ class MainWindow(QMainWindow):
             self.page_bar.hide()
             self.pages_row.hide()
             self.preview_view.set_pixmap(None, "把文件拖进左侧列表开始使用\n\n"
-                                           "预览操作:滚轮缩放 · 拖拽平移 · 双击适应窗口")
+                                           "预览:滚轮缩放 · 拖动水印调位置 · 双击适应窗口")
             return
 
         ext = os.path.splitext(path)[1].lower()
@@ -637,11 +719,18 @@ class MainWindow(QMainWindow):
             self.preview_view.set_pixmap(None, "图片水印:请先在右侧选择水印图片")
             return
         try:
-            result = apply_image_watermark(base, cfg)
+            if cfg.tiled:
+                result = apply_image_watermark(base, cfg)
+                self.preview_view.set_pixmap(_pil_to_pixmap(result))
+            else:
+                # 非平铺:底图与水印分层,水印可在预览里直接拖动
+                element = build_element(cfg, min(base.size))
+                x, y = element_position(cfg, base.width, base.height, element.size)
+                self.preview_view.set_content(_pil_to_pixmap(base),
+                                              _pil_to_pixmap(element), (x, y))
         except Exception as e:
             self.preview_view.set_pixmap(None, f"渲染失败:\n{e}")
             return
-        self.preview_view.set_pixmap(_pil_to_pixmap(result))
 
     # ------------------------------------------------------------ PDF 翻页
 
@@ -752,6 +841,10 @@ class MainWindow(QMainWindow):
         self._sliders["margin"].setValue(d.margin_pct)
         self.format_combo.setCurrentIndex(0)
         self.pages_edit.clear()
+        self._custom_pos = None
+        grid_idx = POSITIONS.index(d.position)
+        if self.position_combo.currentIndex() != grid_idx:
+            self.position_combo.setCurrentIndex(grid_idx)
         self._schedule_preview()
         self._toast("info", "已恢复默认设置", "所有水印参数已回到初始值")
 
@@ -844,6 +937,8 @@ class MainWindow(QMainWindow):
         s.setValue("out/format_index", self.format_combo.currentIndex())
         s.setValue("out/last_dir", self._last_out_dir)
         s.setValue("wm/pdf_pages", self.pages_edit.text().strip())
+        custom = getattr(self, "_custom_pos", None)
+        s.setValue("wm/custom_pos", f"{custom[0]:.4f},{custom[1]:.4f}" if custom else "")
         s.setValue("ui/geometry", self.saveGeometry())
         s.setValue("ui/left_collapsed", self.file_panel.isHidden())
         s.setValue("ui/right_collapsed", self.settings_panel.isHidden())
@@ -893,6 +988,14 @@ class MainWindow(QMainWindow):
             pdf_pages = s.value("wm/pdf_pages", "")
             if isinstance(pdf_pages, str):
                 self.pages_edit.setText(pdf_pages)
+            custom = s.value("wm/custom_pos", "")
+            if isinstance(custom, str) and "," in custom:
+                try:
+                    fx, fy = (float(v) for v in custom.split(","))
+                    if 0 <= fx <= 1 and 0 <= fy <= 1:
+                        self._on_wm_moved(fx, fy)
+                except ValueError:
+                    pass
             geometry = s.value("ui/geometry")
             if geometry is not None:
                 self.restoreGeometry(geometry)

@@ -44,6 +44,7 @@ class WatermarkConfig:
     position: str = "center"    # tiled=False 时生效
     margin_pct: int = 4         # 单个水印距边距,短边的百分比
     pdf_pages: str = ""         # PDF 应用水印的页码,空=全部,例 "1,3,5-8"
+    custom_pos: tuple[float, float] | None = None  # 拖动摆放的水印中心(占宽高比例),覆盖 position
 
 
 # 应用默认值,"恢复默认设置"以它为准

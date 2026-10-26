@@ -66,18 +66,40 @@ def _image_element(cfg: WatermarkConfig, base_px: int) -> Image.Image:
     return logo.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
 
+def build_element(cfg: WatermarkConfig, base_px: int) -> Image.Image:
+    """渲染水印元素本身(旋转 + 透明度已应用),不含摆放位置。"""
+    element = _image_element(cfg, base_px) if cfg.mode == "image" else _text_element(cfg, base_px)
+    if cfg.rotation % 360 != 0:
+        element = element.rotate(cfg.rotation, resample=Image.Resampling.BICUBIC, expand=True)
+    return _apply_opacity(element, cfg.opacity)
+
+
+def element_position(cfg: WatermarkConfig, width: int, height: int,
+                     element_size: tuple[int, int]) -> tuple[int, int]:
+    """返回水印元素左上角在 width x height 画面里的位置。"""
+    ew, eh = element_size
+    if cfg.custom_pos:
+        fx, fy = cfg.custom_pos
+        x = round(fx * width - ew / 2)
+        y = round(fy * height - eh / 2)
+        return max(0, min(x, width - ew)), max(0, min(y, height - eh))
+    base_px = min(width, height)
+    margin = round(base_px * cfg.margin_pct / 100)
+    y_opts = {"top": margin, "middle": (height - eh) // 2, "bottom": height - eh - margin}
+    x_opts = {"left": margin, "center": (width - ew) // 2, "right": width - ew - margin}
+    if "-" in cfg.position:
+        v, h = cfg.position.split("-", 1)
+    else:  # "center"
+        v, h = "middle", "center"
+    return x_opts[h], y_opts[v]
+
+
 def build_layer(size: tuple[int, int], cfg: WatermarkConfig) -> Image.Image:
     """生成与 size 同尺寸的 RGBA 水印图层。"""
     width, height = size
     base_px = min(width, height)
-    element = _image_element(cfg, base_px) if cfg.mode == "image" else _text_element(cfg, base_px)
+    element = build_element(cfg, base_px)
     ew, eh = element.size
-
-    if cfg.rotation % 360 != 0:
-        element = element.rotate(cfg.rotation, resample=Image.Resampling.BICUBIC, expand=True)
-        element = _apply_opacity(element, cfg.opacity)
-    else:
-        element = _apply_opacity(element, cfg.opacity)
 
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
 
@@ -99,14 +121,8 @@ def build_layer(size: tuple[int, int], cfg: WatermarkConfig) -> Image.Image:
             row += 1
         layer.alpha_composite(canvas.crop((pad_x, pad_y, pad_x + width, pad_y + height)))
     else:
-        margin = round(base_px * cfg.margin_pct / 100)
-        y_opts = {"top": margin, "middle": (height - eh) // 2, "bottom": height - eh - margin}
-        x_opts = {"left": margin, "center": (width - ew) // 2, "right": width - ew - margin}
-        if "-" in cfg.position:
-            v, h = cfg.position.split("-", 1)
-        else:  # "center"
-            v, h = "middle", "center"
-        layer.alpha_composite(element, (x_opts[h], y_opts[v]))
+        x, y = element_position(cfg, width, height, element.size)
+        layer.alpha_composite(element, (x, y))
 
     return layer
 

@@ -123,6 +123,7 @@ def main():
     w.tiled_switch.setChecked(True)
     w._on_font_changed(1)  # 黑体
     w.pages_edit.setText("2-3")
+    w._on_wm_moved(0.3, 0.6)
     w._save_settings()
     w2 = MainWindow()
     c2 = w2._collect_config()
@@ -131,6 +132,7 @@ def main():
     assert c2.tiled is True and c2.mode == "text"
     assert c2.font_name == "黑体"
     assert c2.pdf_pages == "2-3"
+    assert c2.custom_pos == (0.3, 0.6)
     QSettings("LiteSeal", "LiteSealTest").clear()
 
     # 11) 导出全链路:ExportWorker 同步跑,图片 + PDF 都要落盘
@@ -202,6 +204,30 @@ def main():
     w3 = MainWindow()
     assert w3.file_panel.isHidden() and w3.settings_panel.isHidden(), "收起状态应被恢复"
     QSettings("LiteSeal", "LiteSealTest").clear()
+
+    # 14) 单枚水印自由拖放:custom_pos 生效、九宫格清除、平铺隐藏水印层
+    from app.core.image_wm import element_position
+    from app.core.models import WatermarkConfig
+    assert element_position(WatermarkConfig(custom_pos=(0.5, 0.5)), 1000, 800, (100, 50)) == (450, 375)
+    assert element_position(WatermarkConfig(custom_pos=(0.0, 0.0)), 1000, 800, (100, 50)) == (0, 0)
+    assert element_position(WatermarkConfig(position="top-left"), 1000, 800, (100, 50)) == (32, 32)
+
+    w.tiled_switch.setChecked(False)
+    w._on_mode_changed("text")
+    w.file_list.setCurrentRow(0)  # 图片文件
+    w._render_preview()
+    assert w.preview_view._wm_item.isVisible(), "非平铺应有可拖动水印层"
+    w._on_wm_moved(0.25, 0.75)
+    assert w._collect_config().custom_pos == (0.25, 0.75)
+    assert w.position_combo.currentData() == "custom", "拖动后位置框应显示自定义"
+    w.position_combo.setCurrentIndex(0)  # 选回左上 => 清除自定义
+    assert w._collect_config().custom_pos is None
+    w.tiled_switch.setChecked(True)
+    w._render_preview()
+    assert not w.preview_view._wm_item.isVisible(), "平铺是合成图,无独立水印层"
+    w.tiled_switch.setChecked(False)
+    w._render_preview()
+    assert w.preview_view._wm_item.isVisible()
 
     print("UI LOGIC TESTS PASSED")
 
