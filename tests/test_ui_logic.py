@@ -75,12 +75,16 @@ def main():
     w.file_list.setCurrentRow(1)  # 选中 PDF
     assert w._pdf_pages == 3, w._pdf_pages
     assert not w.page_bar.isHidden(), "PDF 应显示翻页栏"
-    assert w.page_label.text() == "1 / 3"
+    assert w.page_spin.value() == 1 and w.page_total.text() == "/ 3"
     w._on_page_change(1)
-    assert w._page_index == 1 and w.page_label.text() == "2 / 3"
+    assert w._page_index == 1 and w.page_spin.value() == 2
     w._on_page_change(1)
     w._on_page_change(1)  # 已是最后一页,不应越界
-    assert w._page_index == 2 and w.page_label.text() == "3 / 3"
+    assert w._page_index == 2 and w.page_spin.value() == 3
+    w.page_spin.setValue(1)  # 页码框快速跳转
+    assert w._page_index == 0
+    w.page_spin.setValue(3)
+    assert w._page_index == 2
     w._on_page_change(-5)  # 越界拒绝,停在当前页
     assert w._page_index == 2
 

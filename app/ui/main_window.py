@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (QColorDialog, QDialog, QFileDialog, QGraphicsPixm
 from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             InfoBar, InfoBarPosition, LineEdit, ListWidget,
                             PrimaryPushButton, ProgressBar, PushButton, ScrollArea,
-                            SegmentedWidget, Slider, StrongBodyLabel, SubtitleLabel,
-                            SwitchButton, ToolButton)
+                            SegmentedWidget, Slider, SpinBox, StrongBodyLabel,
+                            SubtitleLabel, SwitchButton, ToolButton)
 
 from app import APP_NAME, __version__
 from app.core.image_wm import (FONT_FILES, apply_image_watermark, build_element,
@@ -386,12 +386,17 @@ class MainWindow(QMainWindow):
         page_next = ToolButton(FIF.CARE_RIGHT_SOLID)
         page_next.setToolTip("下一页")
         page_next.clicked.connect(lambda: self._on_page_change(1))
-        self.page_label = BodyLabel("1 / 1")
-        self.page_label.setFixedWidth(60)
-        self.page_label.setAlignment(Qt.AlignCenter)
         page_layout.addWidget(page_prev)
-        page_layout.addWidget(self.page_label)
         page_layout.addWidget(page_next)
+        self.page_spin = SpinBox()
+        self.page_spin.setRange(1, 1)
+        self.page_spin.setFixedWidth(76)
+        self.page_spin.setAlignment(Qt.AlignCenter)
+        self.page_spin.setToolTip("输入页码回车直接跳转,也可点上下箭头")
+        self.page_spin.valueChanged.connect(self._on_page_spin_changed)
+        self.page_total = BodyLabel("/ 1")
+        page_layout.addWidget(self.page_spin)
+        page_layout.addWidget(self.page_total)
         bar.addWidget(self.page_bar)
         self.right_toggle = ToolButton(FIF.CARE_RIGHT_SOLID)
         self.right_toggle.setToolTip("收起参数面板")
@@ -709,7 +714,11 @@ class MainWindow(QMainWindow):
             if ext in PDF_EXTS:
                 self._pdf_pages = pdf_page_count(path)
                 self._page_index = min(max(self._page_index, 0), self._pdf_pages - 1)
-                self.page_label.setText(f"{self._page_index + 1} / {self._pdf_pages}")
+                self.page_spin.blockSignals(True)  # 程序化同步,避免触发跳转循环
+                self.page_spin.setRange(1, self._pdf_pages)
+                self.page_spin.setValue(self._page_index + 1)
+                self.page_spin.blockSignals(False)
+                self.page_total.setText(f"/ {self._pdf_pages}")
                 self.page_bar.show()
                 self.pages_row.show()
                 try:
@@ -803,6 +812,14 @@ class MainWindow(QMainWindow):
         if 0 <= new_page < self._pdf_pages:
             self._page_index = new_page
             self._render_preview()
+
+    def _on_page_spin_changed(self, value: int):
+        """页码框快速跳转:输入页码回车或点箭头。"""
+        path = self._current_file()
+        if not path or os.path.splitext(path)[1].lower() not in PDF_EXTS:
+            return
+        self._page_index = value - 1
+        self._render_preview()
 
     # ------------------------------------------------------------ 侧栏收缩
 
