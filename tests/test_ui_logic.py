@@ -184,6 +184,28 @@ def main():
     except ValueError:
         pass
 
+    # 选页改走弹窗点选:输入框只读,选页窗支持单击/Shift 连选/奇偶页
+    from PySide6.QtCore import Qt as QtMods
+    from app.core.pdf_wm import pages_to_spec
+    from app.ui.page_picker import PageSelectDialog
+    assert w.pages_edit.isReadOnly(), "页码框应只读,选页走弹窗"
+    assert pages_to_spec([0, 2], 3) == "1,3"
+    assert pages_to_spec([1, 2, 3], 5) == "2-4"
+    assert pages_to_spec([0, 1, 2], 3) == "", "全选应回写为全部"
+    dlg = PageSelectDialog(5, [0, 2])
+    assert dlg._picked() == [0, 2]
+    dlg._on_chip_clicked(1, QtMods.KeyboardModifier.NoModifier)  # 单击 => 选中第 2 页
+    assert dlg._picked() == [0, 1, 2]
+    dlg._on_chip_clicked(3, QtMods.KeyboardModifier.ShiftModifier)  # Shift 连选 2-4 页
+    assert dlg._picked() == [0, 1, 2, 3]
+    dlg._clear_all()
+    assert dlg._picked() == [] and not dlg._ok_btn.isEnabled(), "空选不允许确定"
+    dlg._apply_parity(0)
+    assert dlg._picked() == [0, 2, 4]
+    dlg._select_all()
+    dlg._accept()
+    assert dlg.selection == [0, 1, 2, 3, 4]
+
     w.tiled_switch.setChecked(False)
     w.pages_edit.setText("1,3")
     w.file_list.setCurrentRow(1)

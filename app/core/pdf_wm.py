@@ -86,6 +86,23 @@ def parse_page_spec(spec: str, total: int) -> list[int]:
     return sorted(indices)
 
 
+def pages_to_spec(indices: list[int], total: int) -> str:
+    """把 0 起始页索引列表压成紧凑页码串(如 "1,3,5-8");全选返回 ""(=全部)。"""
+    idx = sorted({i for i in indices if 0 <= i < total})
+    if not idx or len(idx) == total:
+        return ""
+    parts = []
+    start = prev = idx[0]
+    for i in idx[1:]:
+        if i == prev + 1:
+            prev = i
+            continue
+        parts.append(str(start + 1) if start == prev else f"{start + 1}-{prev + 1}")
+        start = prev = i
+    parts.append(str(start + 1) if start == prev else f"{start + 1}-{prev + 1}")
+    return ",".join(parts)
+
+
 def pdf_page_count(path: str) -> int:
     with fitz.open(path) as doc:
         return len(doc)

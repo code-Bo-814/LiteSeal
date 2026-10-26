@@ -12,7 +12,7 @@ from collections import OrderedDict
 from PIL import Image, ImageDraw, ImageOps
 from PySide6.QtCore import QPointF, QSettings, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
-from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
+from PySide6.QtWidgets import (QColorDialog, QDialog, QFileDialog, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsTextItem, QGraphicsView,
                                QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout,
                                QWidget)
@@ -27,7 +27,8 @@ from app.core.image_wm import (FONT_FILES, apply_image_watermark, build_element,
                                element_position, load_font)
 from app.core.models import (DEFAULTS, IMAGE_EXTS, PDF_EXTS, POSITION_LABELS,
                              POSITIONS, SUPPORTED_EXTS, WatermarkConfig)
-from app.core.pdf_wm import parse_page_spec, pdf_page_count, pdf_page_image
+from app.core.pdf_wm import parse_page_spec, pdf_page_count, pdf_page_image, pages_to_spec
+from app.ui.page_picker import PageSelectDialog
 from app.ui.workers import ExportWorker
 
 PREVIEW_MAX_PX = 1400
@@ -477,10 +478,14 @@ class MainWindow(QMainWindow):
         pages_layout.setContentsMargins(0, 0, 0, 0)
         pages_layout.addWidget(BodyLabel("水印页面"))
         self.pages_edit = LineEdit()
-        self.pages_edit.setPlaceholderText("全部;例 1,3 / 2-5 / 奇数页")
-        self.pages_edit.setClearButtonEnabled(True)
+        self.pages_edit.setPlaceholderText("全部页面")
+        self.pages_edit.setReadOnly(True)  # 选页走弹窗点选,杜绝手打歧义
         self.pages_edit.textChanged.connect(self._on_pages_edited)
         pages_layout.addWidget(self.pages_edit, stretch=1)
+        pick_btn = PushButton(FIF.FILTER, "选择页面…")
+        pick_btn.setToolTip("弹窗点选:单击选中,Shift+单击 连选")
+        pick_btn.clicked.connect(self._open_page_picker)
+        pages_layout.addWidget(pick_btn)
         self.pages_row = pages_widget
         layout.addWidget(pages_widget)
         self.pages_row.hide()  # 只在选中 PDF 时显示
@@ -764,6 +769,18 @@ class MainWindow(QMainWindow):
     def _on_pages_edited(self):
         self._update_pages_hint()
         self._schedule_preview()
+
+    def _open_page_picker(self):
+        path = self._current_file()
+        if not path or os.path.splitext(path)[1].lower() not in PDF_EXTS:
+            return
+        try:
+            current = parse_page_spec(self.pages_edit.text().strip(), self._pdf_pages)
+        except ValueError:
+            current = list(range(self._pdf_pages))
+        dlg = PageSelectDialog(self._pdf_pages, current, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selection is not None:
+            self.pages_edit.setText(pages_to_spec(dlg.selection, self._pdf_pages))
 
     def _update_pages_hint(self):
         """输入框 tooltip 实时显示解析结果,写错当场可见。"""
