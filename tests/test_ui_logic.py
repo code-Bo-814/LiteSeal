@@ -164,7 +164,7 @@ def main():
     assert result.get("ok") == 2, result
     assert len(os.listdir(thr_dir)) == 2
 
-    # 12) PDF 选页:范围解析 + 选页导出(第 2 页应无水印,页数不变)
+    # 12) PDF 选页:宽容解析 + 预览实时同步 + 导出落盘
     from app.core.exporter import export_file
     from app.core.pdf_wm import parse_page_spec
     assert parse_page_spec("", 3) == [0, 1, 2]
@@ -172,14 +172,31 @@ def main():
     assert parse_page_spec("1,3", 3) == [0, 2]
     assert parse_page_spec("2-4", 3) == [1, 2]  # 超出页数裁掉
     assert parse_page_spec("1，3", 3) == [0, 2]  # 中文逗号
+    assert parse_page_spec("第1、3页", 3) == [0, 2]  # 中文序数写法
+    assert parse_page_spec("１～３", 3) == [0, 1, 2]  # 全角数字 + 波浪范围
+    assert parse_page_spec("1 3", 3) == [0, 2]  # 空格分隔
+    assert parse_page_spec("1;3", 3) == [0, 2]  # 分号分隔
+    assert parse_page_spec("奇数页", 3) == [0, 2]
+    assert parse_page_spec("偶数", 4) == [1, 3]
     try:
         parse_page_spec("abc", 3)
         assert False, "非法页码应抛 ValueError"
     except ValueError:
         pass
 
+    w.tiled_switch.setChecked(False)
     w.pages_edit.setText("1,3")
-    assert w._collect_config().pdf_pages == "1,3"
+    w.file_list.setCurrentRow(1)
+    assert w._pdf_pages == 3
+    w._render_preview()
+    assert w.preview_view._wm_item.isVisible(), "第 1 页被选中,应有水印层"
+    assert "已选 2 / 3" in (w.pages_edit.toolTip() or ""), "tooltip 应显示解析结果"
+    w._on_page_change(1)
+    assert not w.preview_view._wm_item.isVisible(), "第 2 页未选中,不应有水印"
+    assert w.preview_view._pix_item.isVisible(), "未选中页显示底图 + 角标"
+    w._on_page_change(1)
+    assert w.preview_view._wm_item.isVisible(), "第 3 页被选中"
+
     pages_dir = os.path.join(OUT, "export_pages")
     os.makedirs(pages_dir, exist_ok=True)
     out_pdf = export_file(pdf, w._collect_config(), pages_dir)
@@ -188,6 +205,10 @@ def main():
         assert len(d[0].get_images()) == 1, "第 1 页应有水印"
         assert len(d[1].get_images()) == 0, "第 2 页不应有水印"
         assert len(d[2].get_images()) == 1, "第 3 页应有水印"
+
+    w.pages_edit.setText("abc")
+    w._render_preview()
+    assert not w.preview_view._pix_item.isVisible(), "写错页码时预览应当场报错"
     w.pages_edit.clear()
 
     # 13) 侧栏收缩:两侧都可收起/展开,且状态随设置持久化

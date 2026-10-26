@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections import OrderedDict
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 from PySide6.QtCore import QPointF, QSettings, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QColorDialog, QFileDialog, QGraphicsPixmapItem,
@@ -23,10 +23,11 @@ from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             SwitchButton, ToolButton)
 
 from app import APP_NAME, __version__
-from app.core.image_wm import FONT_FILES, apply_image_watermark, build_element, element_position
+from app.core.image_wm import (FONT_FILES, apply_image_watermark, build_element,
+                               element_position, load_font)
 from app.core.models import (DEFAULTS, IMAGE_EXTS, PDF_EXTS, POSITION_LABELS,
                              POSITIONS, SUPPORTED_EXTS, WatermarkConfig)
-from app.core.pdf_wm import pdf_page_count, pdf_page_image
+from app.core.pdf_wm import parse_page_spec, pdf_page_count, pdf_page_image
 from app.ui.workers import ExportWorker
 
 PREVIEW_MAX_PX = 1400
@@ -476,8 +477,9 @@ class MainWindow(QMainWindow):
         pages_layout.setContentsMargins(0, 0, 0, 0)
         pages_layout.addWidget(BodyLabel("水印页面"))
         self.pages_edit = LineEdit()
-        self.pages_edit.setPlaceholderText("全部;或如 1,3,5-8")
+        self.pages_edit.setPlaceholderText("全部;例 1,3 / 2-5 / 奇数页")
         self.pages_edit.setClearButtonEnabled(True)
+        self.pages_edit.textChanged.connect(self._on_pages_edited)
         pages_layout.addWidget(self.pages_edit, stretch=1)
         self.pages_row = pages_widget
         layout.addWidget(pages_widget)
@@ -697,6 +699,7 @@ class MainWindow(QMainWindow):
             return
 
         ext = os.path.splitext(path)[1].lower()
+        selected = None  # 图片文件不涉及选页;PDF 解析出选中的 0 起始页列表
         try:
             if ext in PDF_EXTS:
                 self._pdf_pages = pdf_page_count(path)
@@ -704,6 +707,13 @@ class MainWindow(QMainWindow):
                 self.page_label.setText(f"{self._page_index + 1} / {self._pdf_pages}")
                 self.page_bar.show()
                 self.pages_row.show()
+                try:
+                    selected = parse_page_spec(self.pages_edit.text().strip(), self._pdf_pages)
+                except ValueError as e:
+                    self.preview_view.set_pixmap(
+                        None, f"页码范围看不懂:{e}\n\n示例:1,3 · 2-5 · 3- · 奇数页 · 全部")
+                    return
+                self._update_pages_hint()
             else:
                 self.page_bar.hide()
                 self.pages_row.hide()
@@ -718,7 +728,12 @@ class MainWindow(QMainWindow):
         if cfg.mode == "image" and not cfg.image_path:
             self.preview_view.set_pixmap(None, "图片水印:请先在右侧选择水印图片")
             return
+        page_selected = selected is None or self._page_index in selected
         try:
+            if not page_selected:
+                # 未选中的页:预览不加水印,盖角标直观提示
+                self.preview_view.set_pixmap(_pil_to_pixmap(self._badge_unselected(base)))
+                return
             if cfg.tiled:
                 result = apply_image_watermark(base, cfg)
                 self.preview_view.set_pixmap(_pil_to_pixmap(result))
@@ -731,6 +746,35 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.preview_view.set_pixmap(None, f"渲染失败:\n{e}")
             return
+
+    def _badge_unselected(self, img: Image.Image) -> Image.Image:
+        """给未选中的 PDF 页盖一个"无水印"角标,预览一眼可辨。"""
+        img = img.convert("RGBA")
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        text = "本页未加水印(未选中)"
+        font = load_font(max(14, min(img.size) // 30), "黑体")
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        w, h = right - left + 32, bottom - top + 16
+        x, y = (img.width - w) // 2, 12
+        draw.rounded_rectangle([x, y, x + w, y + h], radius=8, fill=(0, 0, 0, 150))
+        draw.text((x + 16, y + 8 - top), text, font=font, fill=(255, 255, 255, 255))
+        return Image.alpha_composite(img, overlay)
+
+    def _on_pages_edited(self):
+        self._update_pages_hint()
+        self._schedule_preview()
+
+    def _update_pages_hint(self):
+        """输入框 tooltip 实时显示解析结果,写错当场可见。"""
+        path = self._current_file()
+        if not path or os.path.splitext(path)[1].lower() not in PDF_EXTS:
+            return
+        try:
+            picked = parse_page_spec(self.pages_edit.text().strip(), self._pdf_pages)
+            self.pages_edit.setToolTip(f"已选 {len(picked)} / {self._pdf_pages} 页")
+        except ValueError as e:
+            self.pages_edit.setToolTip(str(e))
 
     # ------------------------------------------------------------ PDF 翻页
 

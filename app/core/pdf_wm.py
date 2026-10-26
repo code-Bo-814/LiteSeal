@@ -18,15 +18,47 @@ from .models import WatermarkConfig
 _ZOOM = 2.0  # 图层渲染倍率,保证叠加进 PDF 后文字清晰
 
 
-def parse_page_spec(spec: str, total: int) -> list[int]:
-    """把 "1,3,5-8" 这类页码描述解析成 0 起始页索引列表;空 / "全部" = 所有页。
+import re
 
-    超出 total 的页码裁掉;中文逗号兼容;非法写法抛 ValueError。
+_PAGE_TABLE = str.maketrans({
+    "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
+    "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
+    "，": ",", "、": ",", "；": ";", "：": ",",
+    "（": ",", "）": ",",
+    "～": "-", "〜": "-", "－": "-", "–": "-", "—": "-",
+    "　": " ",
+})
+
+
+def _normalize_spec(spec: str) -> str:
+    """把各种人手写法归一成 "1,3,5-8" 的形状,标点长得不一样也能认。"""
+    s = spec.translate(_PAGE_TABLE)
+    s = s.replace("到", "-").replace("至", "-")
+    s = re.sub(r"[;:|/\s]+", ",", s)   # 其余分隔符与空白一律当逗号
+    s = s.replace("第", "").replace("页", "")
+    s = re.sub(r"-{2,}", "-", s)
+    s = re.sub(r",{2,}", ",", s)
+    return s.strip(",")
+
+
+def parse_page_spec(spec: str, total: int) -> list[int]:
+    """把 "1,3,5-8" 这类页码描述解析成 0 起始页索引列表。
+
+    空 / "全部" / "全选" = 所有页;"奇数页" / "偶数页" 取相应页;
+    兼容全角数字与标点、"第1、3页"、"1~3"、"3到5" 等写法;
+    超出 total 的页码裁掉;完全无法理解时抛 ValueError。
     """
-    if not spec or not spec.strip() or spec.strip().lower() in ("all", "全部"):
+    if spec is None:
         return list(range(total))
+    s = _normalize_spec(str(spec))
+    if not s or s.lower() in ("all", "全部", "全选"):
+        return list(range(total))
+    if s.lower() in ("odd", "奇数"):
+        return list(range(0, total, 2))
+    if s.lower() in ("even", "偶数"):
+        return list(range(1, total, 2))
     indices: set[int] = set()
-    for token in spec.replace("，", ",").split(","):
+    for token in s.split(","):
         token = token.strip()
         if not token:
             continue
