@@ -103,8 +103,7 @@ class PageSelectDialog(QDialog):
             lo, hi = min(self._anchor, idx), max(self._anchor, idx)
             for j in range(lo, hi + 1):
                 self._chips[j].setChecked(True)
-        else:
-            self._chips[idx].setChecked(not self._chips[idx].isChecked())
+        # 单击分支:可勾选按钮在 clicked 信号发出前已被 Qt 自动翻转,这里绝不能再翻一次
         self._anchor = idx
         self._update_count()
 

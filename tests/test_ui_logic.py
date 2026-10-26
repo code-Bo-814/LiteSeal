@@ -194,10 +194,15 @@ def main():
     assert pages_to_spec([0, 1, 2], 3) == "", "全选应回写为全部"
     dlg = PageSelectDialog(5, [0, 2])
     assert dlg._picked() == [0, 2]
-    dlg._on_chip_clicked(1, QtMods.KeyboardModifier.NoModifier)  # 单击 => 选中第 2 页
-    assert dlg._picked() == [0, 1, 2]
-    dlg._on_chip_clicked(3, QtMods.KeyboardModifier.ShiftModifier)  # Shift 连选 2-4 页
-    assert dlg._picked() == [0, 1, 2, 3]
+    dlg._chips[1].click()  # 真实单击路径:Qt 先自动翻转 checked,再发 clicked
+    assert dlg._picked() == [0, 1, 2], "单击应切换选中态(回归:此前被双重翻转抵消)"
+    dlg._chips[1].click()
+    assert dlg._picked() == [0, 2], "再次单击应取消"
+    dlg._chips[3].click()
+    assert dlg._anchor == 3
+    dlg._chips[2].setChecked(True)  # 模拟 Shift+单击时 Qt 的自动翻转
+    dlg._on_chip_clicked(2, QtMods.KeyboardModifier.ShiftModifier)
+    assert dlg._picked() == [0, 2, 3]
     dlg._clear_all()
     assert dlg._picked() == [] and not dlg._ok_btn.isEnabled(), "空选不允许确定"
     dlg._apply_parity(0)
