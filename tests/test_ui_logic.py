@@ -75,16 +75,27 @@ def main():
     w.file_list.setCurrentRow(1)  # 选中 PDF
     assert w._pdf_pages == 3, w._pdf_pages
     assert not w.page_bar.isHidden(), "PDF 应显示翻页栏"
-    assert w.page_spin.value() == 1 and w.page_total.text() == "/ 3"
+    assert w.page_btn.text() == "1" and w.page_total.text() == "/ 3"
     w._on_page_change(1)
-    assert w._page_index == 1 and w.page_spin.value() == 2
+    assert w._page_index == 1 and w.page_btn.text() == "2"
     w._on_page_change(1)
     w._on_page_change(1)  # 已是最后一页,不应越界
-    assert w._page_index == 2 and w.page_spin.value() == 3
-    w.page_spin.setValue(1)  # 页码框快速跳转
-    assert w._page_index == 0
-    w.page_spin.setValue(3)
-    assert w._page_index == 2
+    assert w._page_index == 2 and w.page_btn.text() == "3"
+
+    # 点击页码进入输入态;回车跳转;非法 / 越界 / 空输入一律不理会
+    w._enter_page_edit()
+    assert w.page_stack.currentIndex() == 1 and w.page_edit.text() == "3"
+    w.page_edit.setText("1")
+    w._commit_page_edit()
+    assert w._page_index == 0 and w.page_stack.currentIndex() == 0 and w.page_btn.text() == "1"
+    w._enter_page_edit(); w.page_edit.setText("abc"); w._commit_page_edit()
+    assert w._page_index == 0, "非法输入应不理会"
+    w._enter_page_edit(); w.page_edit.setText("99"); w._commit_page_edit()
+    assert w._page_index == 0, "越界输入应不理会"
+    w._enter_page_edit(); w.page_edit.setText(""); w._commit_page_edit()
+    assert w._page_index == 0, "空输入应不理会"
+    w._enter_page_edit(); w.page_edit.setText("3"); w._commit_page_edit()
+    assert w._page_index == 2 and w.page_btn.text() == "3"
     w._on_page_change(-5)  # 越界拒绝,停在当前页
     assert w._page_index == 2
 

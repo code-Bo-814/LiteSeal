@@ -10,8 +10,8 @@ import os
 from collections import OrderedDict
 
 from PIL import Image, ImageDraw, ImageOps
-from PySide6.QtCore import QPointF, QSettings, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QPointF, QSettings, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (QColorDialog, QDialog, QFileDialog, QGraphicsPixmapItem,
                                QGraphicsScene, QGraphicsTextItem, QGraphicsView,
                                QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout,
@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (QColorDialog, QDialog, QFileDialog, QGraphicsPixm
 from qfluentwidgets import (BodyLabel, CardWidget, ComboBox, FluentIcon as FIF,
                             InfoBar, InfoBarPosition, LineEdit, ListWidget,
                             PrimaryPushButton, ProgressBar, PushButton, ScrollArea,
-                            SegmentedWidget, Slider, SpinBox, StrongBodyLabel,
-                            SubtitleLabel, SwitchButton, ToolButton)
+                            SegmentedWidget, Slider, StrongBodyLabel, SubtitleLabel,
+                            SwitchButton, ToolButton, TransparentPushButton)
 
 from app import APP_NAME, __version__
 from app.core.image_wm import (FONT_FILES, apply_image_watermark, build_element,
@@ -206,6 +206,18 @@ class PreviewView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
 
+class _PageJumpEdit(LineEdit):
+    """页码跳转输入框:Esc 取消回到显示态。"""
+
+    escaped = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.escaped.emit()
+        else:
+            super().keyPressEvent(event)
+
+
 class FileList(ListWidget):
     """支持拖拽导入的文件列表。"""
 
@@ -388,14 +400,23 @@ class MainWindow(QMainWindow):
         page_next.clicked.connect(lambda: self._on_page_change(1))
         page_layout.addWidget(page_prev)
         page_layout.addWidget(page_next)
-        self.page_spin = SpinBox()
-        self.page_spin.setRange(1, 1)
-        self.page_spin.setFixedWidth(76)
-        self.page_spin.setAlignment(Qt.AlignCenter)
-        self.page_spin.setToolTip("输入页码回车直接跳转,也可点上下箭头")
-        self.page_spin.valueChanged.connect(self._on_page_spin_changed)
+        # 当前页数字(点击变输入框跳转)/ 总页数
+        self.page_btn = TransparentPushButton("1")
+        self.page_btn.setFixedWidth(56)
+        self.page_btn.setToolTip("点击输入页码跳转,Esc 取消")
+        self.page_btn.clicked.connect(self._enter_page_edit)
+        self.page_edit = _PageJumpEdit()
+        self.page_edit.setFixedWidth(64)
+        self.page_edit.setAlignment(Qt.AlignCenter)
+        self.page_edit.returnPressed.connect(self._commit_page_edit)
+        self.page_edit.escaped.connect(self._exit_page_edit)
+        self.page_edit.installEventFilter(self)
+        self.page_stack = QStackedWidget()
+        self.page_stack.setFixedWidth(76)
+        self.page_stack.addWidget(self.page_btn)   # 0: 显示当前页
+        self.page_stack.addWidget(self.page_edit)   # 1: 输入跳转
         self.page_total = BodyLabel("/ 1")
-        page_layout.addWidget(self.page_spin)
+        page_layout.addWidget(self.page_stack)
         page_layout.addWidget(self.page_total)
         bar.addWidget(self.page_bar)
         self.right_toggle = ToolButton(FIF.CARE_RIGHT_SOLID)
@@ -714,11 +735,7 @@ class MainWindow(QMainWindow):
             if ext in PDF_EXTS:
                 self._pdf_pages = pdf_page_count(path)
                 self._page_index = min(max(self._page_index, 0), self._pdf_pages - 1)
-                self.page_spin.blockSignals(True)  # 程序化同步,避免触发跳转循环
-                self.page_spin.setRange(1, self._pdf_pages)
-                self.page_spin.setValue(self._page_index + 1)
-                self.page_spin.blockSignals(False)
-                self.page_total.setText(f"/ {self._pdf_pages}")
+                self._sync_page_widgets()
                 self.page_bar.show()
                 self.pages_row.show()
                 try:
@@ -820,6 +837,44 @@ class MainWindow(QMainWindow):
             return
         self._page_index = value - 1
         self._render_preview()
+
+    def _sync_page_widgets(self):
+        self.page_btn.setText(str(self._page_index + 1))
+        self.page_total.setText(f"/ {self._pdf_pages}")
+
+    def _enter_page_edit(self):
+        """点击页码数字:原位变输入框,预填当前页并全选。"""
+        path = self._current_file()
+        if not path or os.path.splitext(path)[1].lower() not in PDF_EXTS:
+            return
+        self.page_edit.setValidator(QIntValidator(1, max(1, self._pdf_pages), self))
+        self.page_edit.setText(str(self._page_index + 1))
+        self.page_stack.setCurrentIndex(1)
+        self.page_edit.setFocus()
+        self.page_edit.selectAll()
+
+    def _commit_page_edit(self):
+        text = self.page_edit.text().strip()
+        self._exit_page_edit()
+        try:
+            page = int(text)
+        except ValueError:
+            return  # 非法输入:不理会,保持当前页
+        if not 1 <= page <= self._pdf_pages:
+            return  # 越界:不理会
+        if page - 1 != self._page_index:
+            self._page_index = page - 1
+            self._render_preview()
+
+    def _exit_page_edit(self):
+        if self.page_stack.currentIndex() != 0:
+            self.page_stack.setCurrentIndex(0)
+        self._sync_page_widgets()
+
+    def eventFilter(self, obj, event):
+        if obj is self.page_edit and event.type() == QEvent.Type.FocusOut:
+            self._exit_page_edit()  # 点别处 = 取消,回到当前页显示
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------ 侧栏收缩
 
