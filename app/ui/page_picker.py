@@ -6,7 +6,31 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QColor
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (BodyLabel, FlowLayout, PrimaryPushButton, PushButton,
-                            ScrollArea)
+                            ScrollArea, isDarkTheme)
+
+
+def _chip_qss() -> str:
+    """页码块三态样式。qfluentwidgets 按钮自带样式表会盖掉父级级联,
+    必须逐个设在控件上才生效;:checked 放在 :hover 之后保证选中态优先。"""
+    dark = isDarkTheme()
+    bg = "#2b2b2b" if dark else "#ffffff"
+    fg = "#dddddd" if dark else "#1a1a1a"
+    border = "rgba(255,255,255,0.14)" if dark else "rgba(0,0,0,0.16)"
+    return f"""
+    QPushButton {{
+        min-width: 52px; min-height: 30px; padding: 2px 10px;
+        border: 1px solid {border}; border-radius: 6px;
+        background-color: {bg}; color: {fg};
+        font-size: 13px;
+    }}
+    QPushButton:hover {{
+        border: 1px solid #009faa; color: #009faa;
+    }}
+    QPushButton:checked {{
+        background-color: #009faa; color: white; border: 1px solid #009faa;
+        font-weight: bold;
+    }}
+    """
 
 
 class PageSelectDialog(QDialog):
@@ -42,9 +66,7 @@ class PageSelectDialog(QDialog):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(ScrollArea.Shape.NoFrame)
         container = QWidget()
-        container.setStyleSheet(
-            "QPushButton { min-width: 52px; min-height: 30px; padding: 2px 10px; }"
-            "QPushButton:checked { background-color: #009faa; color: white; border: none; }")
+        chip_qss = _chip_qss()
         flow = FlowLayout(container)
         flow.setContentsMargins(0, 0, 0, 0)
         self._chips: list[PushButton] = []
@@ -52,6 +74,7 @@ class PageSelectDialog(QDialog):
             chip = PushButton(str(i + 1))
             chip.setCheckable(True)
             chip.setChecked(i in selected)
+            chip.setStyleSheet(chip_qss)
             chip.clicked.connect(lambda _=False, idx=i: self._on_chip_clicked(idx))
             flow.addWidget(chip)
             self._chips.append(chip)
