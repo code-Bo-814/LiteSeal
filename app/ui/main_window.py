@@ -303,7 +303,7 @@ class MainWindow(QMainWindow):
 
         header = QHBoxLayout()
         title = SubtitleLabel(APP_NAME)
-        version = BodyLabel(f"v{__version__} · 给图片和 PDF 批量加水印")
+        version = BodyLabel(f"v{__version__} · 图片/PDF 批量水印工具")
         version.setTextColor(QColor(128, 128, 128), QColor(160, 160, 160))
         header.addWidget(title)
         header.addWidget(version)
@@ -391,7 +391,8 @@ class MainWindow(QMainWindow):
         self.page_bar = QWidget()
         page_layout = QHBoxLayout(self.page_bar)
         page_layout.setContentsMargins(0, 0, 0, 0)
-        page_layout.setSpacing(6)
+        page_layout.setSpacing(13)
+        
         page_prev = ToolButton(FIF.CARE_LEFT_SOLID)
         page_prev.setToolTip("上一页")
         page_prev.clicked.connect(lambda: self._on_page_change(-1))
@@ -399,24 +400,27 @@ class MainWindow(QMainWindow):
         page_next.setToolTip("下一页")
         page_next.clicked.connect(lambda: self._on_page_change(1))
         page_layout.addWidget(page_prev)
+        page_layout.insertSpacing(0, 5)
         page_layout.addWidget(page_next)
+
         # 当前页数字(点击变输入框跳转)/ 总页数
         self.page_btn = TransparentPushButton("1")
-        self.page_btn.setFixedWidth(56)
+        self.page_btn.setFixedWidth(36)
         self.page_btn.setToolTip("点击输入页码跳转,Esc 取消")
         self.page_btn.clicked.connect(self._enter_page_edit)
         self.page_edit = _PageJumpEdit()
-        self.page_edit.setFixedWidth(64)
-        self.page_edit.setAlignment(Qt.AlignCenter)
+        self.page_edit.setFixedWidth(36)
         self.page_edit.returnPressed.connect(self._commit_page_edit)
         self.page_edit.escaped.connect(self._exit_page_edit)
         self.page_edit.installEventFilter(self)
         self.page_stack = QStackedWidget()
-        self.page_stack.setFixedWidth(76)
+        self.page_stack.setFixedWidth(36)
         self.page_stack.addWidget(self.page_btn)   # 0: 显示当前页
         self.page_stack.addWidget(self.page_edit)   # 1: 输入跳转
+
         self.page_total = BodyLabel("/ 1")
         page_layout.addWidget(self.page_stack)
+        page_layout.insertSpacing(2, 0)
         page_layout.addWidget(self.page_total)
         bar.addWidget(self.page_bar)
         self.right_toggle = ToolButton(FIF.CARE_RIGHT_SOLID)

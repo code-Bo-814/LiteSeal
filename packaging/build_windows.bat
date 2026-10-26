@@ -3,20 +3,19 @@ setlocal
 cd /d "%~dp0.."
 
 if not exist ".venv\Scripts\pyinstaller.exe" (
-    echo [!] 未找到虚拟环境,请先按 README.md 创建并安装依赖
+    echo [!] Virtual environment not found. Please create it first.
     exit /b 1
 )
 
-echo [1/2] PyInstaller 打包...
+echo [1/2] Building EXE with PyInstaller...
 ".venv\Scripts\pyinstaller.exe" packaging\liteseal.spec --noconfirm
 if errorlevel 1 exit /b 1
 
-echo [2/2] Inno Setup 制作安装包...
+echo [2/2] Building Setup with Inno Setup...
 where iscc >nul 2>nul
 if errorlevel 1 (
-    echo [!] 未找到 Inno Setup ^(iscc^),已生成 dist\LiteSeal 文件夹,
-    echo     安装 https://jrsoftware.org/isinfo.php 后重跑本脚本,或直接分发 dist 文件夹
+    echo [!] Inno Setup iscc not found. 
     exit /b 0
 )
 iscc packaging\setup.iss
-echo 完成:packaging\dist\LiteSeal-Setup-0.1.0.exe
+echo Build Success: packaging\dist\LiteSeal-Setup-0.1.0.exe

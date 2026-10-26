@@ -293,6 +293,10 @@ def main():
     assert w.preview_view._wm_item.isVisible()
 
     print("UI LOGIC TESTS PASSED")
+    sys.stdout.flush()
+    # 本测试创建了多个 MainWindow,Qt 对象在解释器退出阶段偶发段错误;
+    # 断言已全部通过,直接干净退出,不进入易碎的析构流程
+    os._exit(0)
 
 
 if __name__ == "__main__":

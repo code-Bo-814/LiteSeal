@@ -2,17 +2,18 @@
 # PyInstaller 打包配置:pyinstaller packaging/liteseal.spec --noconfirm
 import os
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("qfluentwidgets",):
+for pkg in ("qfluentwidgets", "pymupdf"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
-
+# pymupdf 2.0 导入即需 onnx 模型配置,必须随包收集(漏掉会启动即 FileNotFoundError)
+datas += collect_data_files("pymupdf", include_py_files=False)
 datas.append((os.path.join(ROOT, "app", "resources", "icon.png"), "app/resources"))
 
 a = Analysis(
